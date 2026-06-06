@@ -1,0 +1,96 @@
+{% extends 'base.html' %} {% block content %}
+    <h1 class="mb-4">Subscription Plans</h1>
+    <link rel="stylesheet" href="/static/css/subscribeman.css">
+
+    <div class="container">
+
+
+        <hr>
+
+        <!-- Subscription Plans using Cards -->
+  
+        <div class="card-deck">
+            <!-- 1 Month Plan 
+            <div class="card" style="background-color: lightgreen;">
+                <form action="{{ action_url }}" method="post">
+                    <div class="card-body">
+
+                        <h5 class="card-title">Special Offer 1st 1000 Users Only 1 Year Plan</h5>
+                        <p class="card-text">Price: Rs 5999</p>
+                        <p class="card-text">For New Users Only </p>
+                        <input type="hidden" name="price" id="price" value="12_month" readonly required class="form-control form-control-sm" />
+                        <button type="submit" id="rzp-button1" class="btn btn-primary">Pay</button>
+
+                    </div>
+                </form>
+            </div>
+-->
+
+            <!-- 1 Month Plan -->
+            <div class="card">
+                <form action="{{ action_url }}" method="post">
+                <div class="card-body">
+
+                    <h5 class="card-title">1 Month Plan</h5>
+                    <p class="card-text" >Price: Rs 2999</p>
+                    <input type="hidden" name="price" id="price" value="1month" readonly required class="form-control form-control-sm" />
+                    <button type="submit" id="rzp-button1" class="btn btn-primary">Pay</button>
+                    
+            
+                </div>
+                </form>
+            </div>
+
+            <!-- 3 Month Plan -->
+            <div class="card">
+                <form action="{{ action_url }}" method="post">
+                <div class="card-body">
+                    <h5 class="card-title">3 Month Plan</h5>
+                    <p class="card-text">Price: Rs 8997 (5% off) </p>
+                    <input type="hidden" name="price" id="price" value="3month" readonly required class="form-control form-control-sm" />
+                    <button type="submit" id="rzp-button1" class="btn btn-primary">Pay</button>
+                    
+                </div>
+                </form>
+            </div>
+
+            <!-- 6 Month Plan -->
+            <div class="card">
+                <form action="{{ action_url }}" method="post">
+                <div class="card-body">
+                    <h5 class="card-title">6 Month Plan</h5>
+                    <p class="card-text">Price: Rs 18000 (10% off)</p>
+                    <input type="hidden" name="price" id="price" value="6month" readonly required class="form-control form-control-sm" />
+                    <button type="submit" id="rzp-button1" class="btn btn-primary">Pay</button>
+                    
+                </div>
+                </form>
+            </div>
+
+            <!-- 1 Year Plan -->
+            <div class="card">
+                <form action="{{ action_url }}" method="post">
+                <div class="card-body">
+                    <h5 class="card-title">1 Year Plan</h5>
+                    <p class="card-text">Price: Rs 36000 (15% off)</p>
+                    <input type="hidden" name="price" id="price" value="12month" readonly required class="form-control form-control-sm" />
+                    <button type="submit" id="rzp-button1" class="btn btn-primary">Pay</button>
+                    
+                </div>
+                </form>
+            </div>
+        </div>
+
+        <hr>
+
+
+    </div>
+
+    <!-- Bootstrap JS and Popper.js -->
+    <script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js"></script>
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/js/bootstrap.min.js"></script>
+    
+    
+    {% endblock %}
+

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Update API</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+</head>
+<body>
+    <div class="container mt-5">
+        <h2>Update API</h2>
+        <form method="POST" action="/update_api/{{ api['_id'] }}">
+            <div class="form-group">
+                <label for="apikey">API Key:</label>
+                <input type="text" class="form-control" id="apikey" name="apikey" value="{{ api['apikey'] }}" required>
+            </div>
+            <div class="form-group">
+                <label for="auth_code">Auth Code / API Key:</label>
+                <input type="text" class="form-control" id="auth_code" name="auth_code" value="{{ api['auth_code']|default('') }}">
+            </div>
+            <div class="form-group">
+                <label for="apisecret">API Secret:</label>
+                <input type="text" class="form-control" id="apisecret" name="apisecret" value="{{ api['apisecret'] }}" required>
+            </div>
+            <div class="form-group">
+                <label for="user">User:</label>
+                <input type="text" class="form-control" id="user" name="user" value="{{ api['user'] }}" readonly required>
+            </div>
+            <button type="submit" class="btn btn-primary">Update API</button>
+        </form>
+    </div>
+</body>
+</html>

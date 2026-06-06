@@ -1,0 +1,81 @@
+
+{% extends 'base.html' %} {% block content %}
+<div class="container mt-4">
+  <h2>Admin Dashboard</h2>
+
+  <div class="row">
+    <div class="col mb-2">
+        
+        <h4><a href="{{ url_for('admin') }}"><span class="badge bg-secondary bg-warning">Admin</span></a></h4>
+        
+      </div></div>
+<div class="container mt-4">
+  <h2>Strategy Dashboard</h2>
+    <div class="table-responsive">
+  <table class="table table-bordered table-sm" style="max-height: 50px;overflow-x: auto;overflow-y: auto;">
+    <thead>
+      <tr>
+        <th>Actions</th>
+        <th>Users</th>
+        <th>Time</th>
+        <th>BOT</th>
+        <th>Strategy</th>
+        <th>Symbol</th>
+        <th>TF</th>
+        <th>Live</th>
+        <th>LOTS</th>
+        <th>Duration</th>
+        <th>B/S Mode</th>
+        <th>Status</th>
+        
+      </tr>
+    </thead>
+    <tbody>
+
+      {% for order in strategy %}
+      <tr>
+
+        <td>
+          {% if order["status"] == 'opened' %}
+            <a href="{{ url_for('stop_admin_ssalgo', order_time=order['botcode']) }}"
+            class="btn btn-danger btn-sm"
+            >Stop</a>
+            <a href="{{ url_for('edit_admin_strategy_form', order_time=order['botcode']) }}"
+            class="btn btn-primary btn-sm"
+            >Modify</a>
+          {% else %}
+
+            <a href="{{ url_for('start_admin_ssalgo', order_time=order['botcode']) }}"
+            class="btn btn-success btn-sm"
+            >Start</a>
+
+
+            <a href="{{ url_for('edit_admin_strategy_form', order_time=order['botcode']) }}"
+            class="btn btn-primary btn-sm"
+            >Modify</a>
+            <a href="{{ url_for('delete_admin_ssalgo', order_time=order['botcode']) }}"
+            class="btn btn-danger btn-sm"
+            >Delete</a>
+            {% endif %}
+        </td>
+        <td>{{ order["user"] }}</td>
+        <td>{{ order["time"] }}</td>
+        <td>{{ order["botname"] }}</td>
+        <td>{{ order["strategy"] }}</td>
+        <td>{{ order["symbol"] }}</td>
+        <td>{{ order["timeframe"] }}</td>
+        <td>{{ 'Live' if order['live'] else 'Paper' }}</td>
+        <td>{{ order["lot"] }}</td>
+        <td>{{ 'Intraday' if order["intraday"] else 'Positional' }}</td>
+        <td>{{ 'Buyer' if order["BSmode"] else 'Seller' }}</td>
+        <td>{{ order["status"] }}</td>
+ 
+
+        
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+
+{% endblock %}

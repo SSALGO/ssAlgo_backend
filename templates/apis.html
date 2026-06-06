@@ -1,0 +1,43 @@
+{% extends 'base.html' %} {% block content %}
+<div class="container mt-4">
+  <h2>Admin Dashboard</h2>
+
+  <div class="row">
+    <div class="col mb-2">
+        
+        <h4><a href="{{ url_for('admin') }}"><span class="badge bg-secondary bg-warning">Admin</span></a></h4>
+        
+      </div></div>
+    <div class="container mt-4">
+        <h2>API Management</h2>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Action</th>
+                    <th>User</th>
+                    <th>API Key</th>
+                    <th>Auth Code</th>
+                    <th>API Secret</th>
+                    
+                </tr>
+            </thead>
+            <tbody>
+                {% for api in apis %}
+                    <tr>
+                        <td>
+                            <a href="{{ url_for('update_api', api_id=(api._id)) }}" class="btn btn-warning">Update</a>
+                            <a href="{{ url_for('delete_api', api_id=(api._id)) }}" class="btn btn-danger">Delete</a>
+                        </td>
+                        <td>{{ api.user }}</td>
+                        <td>{{ api.apikey }}</td>
+                        <td>{{ api.auth_code }}</td>
+                        <td>{{ api.apisecret }}</td>
+                        
+                        
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+<{% endblock %}

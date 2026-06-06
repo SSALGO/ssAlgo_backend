@@ -1,0 +1,39 @@
+{% extends 'base.html' %} {% block content %}
+<div class="container mt-4">
+  <h2>Admin Dashboard</h2>
+
+  <div class="row">
+    <div class="col mb-2">
+        
+        <h4><a href="{{ url_for('admin') }}"><span class="badge bg-secondary bg-warning">Admin</span></a></h4>
+        
+      </div></div>
+    <div class="container mt-4">
+        <h2>User Management</h2>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Username</th>
+                    <th>Email</th>
+                    <th>Mobile</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+
+                    <tr>
+                        <td>{{ user.username }}</td>
+                        <td>{{ user.email }}</td>
+                        <td>{{ user.mobile }}</td>
+                        <td>
+                            <a href="{{ url_for('update_user', user_id=(user._id)) }}" class="btn btn-warning">Update</a>
+                            <a href="{{ url_for('delete_user', user_id=(user._id)) }}" class="btn btn-danger">Delete</a>
+                        </td>
+                    </tr>
+
+                {% endfor %}
+            </tbody>
+        </table>
+    </div></div>
+{% endblock %}

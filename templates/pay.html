@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>Confirm Payment</title>
+    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+        body {
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: #f8f9fa;
+        }
+        .payment-box {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 10px;
+            background-color: #fff;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-light">
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <div class="col-md-6">
+                <div class="card payment-box">
+                    <div class="card-body">
+                        <h2 class="text-center mb-4">Confirm payment of ₹{{ details['payment']['amount']//100 }}.00</h2>
+                        <form method="POST" class="text-center payment-form">
+                            <button id="rzp-button1" class="btn btn-primary rzp-button">Pay</button>
+                        </form>
+                <form id="test_form" style="display:none;" method="POST" action="{{ url_for('pay_verify') }}">
+                    <input name="payment_id" type="text" id="payment_id">
+                    <input name="order_id" type="text" id="order_id">
+                    <input name="signature" type="text" id="signature">
+                    <input name="duration" type="text" id="duration" value="{{details['duration'] }}">
+                </form>
+                <form id="failed_form" action="{{ url_for('pay_failure') }}" style="display:none;">
+                    <!-- Your existing form inputs here -->
+                </form>
+       </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script>
+    var options = {
+        "key": "{{ key}}", // Enter the Key ID generated from the Dashboard
+        "amount": {{ details['payment']['amount'] }}, // Amount is in currency subunits. Default currency is INR. Hence, 50000 refers to 50000 paise
+        "currency": "INR",
+        "name": "SSALGO",
+        "description": "1 MONTHS",
+        "order_id": "{{ details['payment']['id'] }}", //This is a sample Order ID. Pass the `id` obtained in the response of Step 2
+        "handler": function (response){
+            console.log(
+                {
+                    razorpay_payment_id: response.razorpay_payment_id,
+                    razorpay_order_id: response.razorpay_order_id,
+                    razorpay_signature: response.razorpay_signature
+                }
+            );
+            document.getElementById('payment_id').setAttribute('value', response.razorpay_payment_id);
+            document.getElementById('order_id').setAttribute('value', response.razorpay_order_id);
+            document.getElementById('signature').setAttribute('value', response.razorpay_signature);
+            document.getElementById('test_form').submit();
+        },
+        "prefill": {
+            "name": "{{ details['name'] }}",
+            "email": "{{ details['email'] }}",
+            "contact": "{{ details['mobile'] }}"
+        },
+        "theme": {
+            "color": "#99cc33"
+        }
+    };
+    var rzp1 = new Razorpay(options);
+    rzp1.on('payment.failed', function (response){
+            alert(response.error.code);
+            alert(response.error.description);
+            alert(response.error.source);
+            alert(response.error.step);
+            alert(response.error.reason);
+            alert(response.error.metadata.order_id);
+            alert(response.error.metadata.payment_id);
+            document.getElementById('failed_form').submit();
+    });
+    document.getElementById('rzp-button1').onclick = function(e){
+        rzp1.open();
+        e.preventDefault();
+    }
+    </script>
+</body>
+</html>

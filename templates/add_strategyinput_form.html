@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="stylesheet"
+      href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css"
+    />
+    <title>{% if order %}Edit Order{% else %}Add Order{% endif %}</title>
+  </head>
+
+  <style>
+    /* Initially hide the hidden input */
+    #trailHidden {
+        display: none;
+    }
+
+    /* Show the hidden input when the checkbox is checked */
+    #trailCheckbox:checked + #trailHidden {
+        display: block;
+    }
+</style>
+
+  <body>
+    <div class="container mt-4" >
+      <h2>{% if order %}Edit Strategy Input{% else %}Add Edit Strategy Input{% endif %}</h2>
+      <form method="post" action="{{ action_url }}">
+
+
+        <div class="row">
+          <div class="col">
+        <div class="md-form">
+          <label for="botname" class="form-control-sm">Strategy</label>
+          <input
+            type="text"
+            class="form-control form-control-sm"
+            id="strategy"
+            name="strategy"
+            value="{% if order %}{{ order['strategy'] }}{% endif %}"
+            required 
+            {%
+            if
+            order
+            %}readonly{%
+            endif
+            %}
+          />
+        </div></div>
+
+
+        
+          
+      
+        
+        
+<div class="col">
+
+        <div class="md-form">
+          <label for="timeframe" class="form-control-sm">TimeFrame</label>
+
+          <select class="form-control form-control-sm" id="timeframe" name="timeframe">
+            <option value="3m" {% if order %} {% if order['timeframe'] == "3m" %} selected {% endif %} {% endif %}>3m</option>
+            <option value="5m" {% if order %} {% if order['timeframe'] == "5m" %} selected {% endif %} {% endif %}>5m</option>
+            <option value="10m" {% if order %} {% if order['timeframe'] == "10m" %} selected {% endif %} {% endif %}>10m</option>
+            <option value="15m" {% if order %} {% if order['timeframe'] == "15m" %} selected {% endif %} {% endif %}>15m</option>
+            <option value="30m" {% if order %} {% if order['timeframe'] == "30m" %} selected {% endif %} {% endif %}>30m</option>
+            <option value="1h" {% if order %} {% if order['timeframe'] == "1h" %} selected {% endif %} {% endif %}>1h</option>
+            <option value="2h" {% if order %} {% if order['timeframe'] == "2h" %} selected {% endif %} {% endif %}>2h</option>
+            <option value="2m" {% if order %} {% if order['timeframe'] == "2m" %} selected {% endif %} {% endif %}>2m</option>
+            <option value="1m" {% if order %} {% if order['timeframe'] == "1m" %} selected {% endif %} {% endif %}>1m</option>
+        </select>
+        </div> 
+
+
+      </div> 
+</div>
+<div class="row">
+        <div class="col">
+        <div class="md-form ">
+          <label for="r1" 
+          class="form-control-sm">R1</label>
+          <input
+          required
+            class="form-control form-control-sm"
+            id="r1"
+            name="r1"
+            required="True"
+                  type="number"
+                  step="1"
+            value="{% if order and order['r1'] %}{{ order['r1'] }}{% else %}5{% endif %}"
+          />
+        </div> </div> 
+
+        <div class="col">
+        <div class="md-form ">
+          <label for="k1" 
+          class="form-control-sm">K1</label>
+          <input
+          required
+            class="form-control form-control-sm"
+            id="k1"
+            name="k1"
+            required="True"
+                  type="number"
+                  step="1"
+            value="{% if order and order['k1'] %}{{ order['k1'] }}{% else %}2{% endif %}"
+          />
+        </div> </div> 
+        <div class="col">
+        <div class="md-form ">
+          <label for="r2" 
+          class="form-control-sm">R2</label>
+          <input
+          required
+            class="form-control form-control-sm"
+            id="r2"
+            name="r2"
+            required="True"
+                  type="number"
+                  step="1"
+            value="{% if order and order['r2'] %}{{ order['r2'] }}{% else %}5{% endif %}"
+          />
+        </div> </div> 
+
+        <div class="col">
+        <div class="md-form ">
+          {% if order %}
+
+          {% if order['strategy']!="SSEQUITYFNO" %}
+          <label for="k2" 
+          class="form-control-sm">K2</label>
+          <input
+          required
+            class="form-control form-control-sm"
+            id="k2"
+            name="k2"
+            required="True"
+                  type="number"
+                  step="1"
+            value="{% if order and order['k2'] %}{{ order['k2'] }}{% else %}2{% endif %}"
+          />
+          {% else %}
+
+
+
+          <label for="k2" class="form-control-sm">Nifty Detection</label>
+
+          <select class="form-control form-control-sm" id="k2" name="k2">
+            <option value="0" {% if order %} {% if order['k2'] == 0 %} selected {% endif %} {% endif %}>True</option>
+            <option value="1" {% if order %} {% if order['k2'] == 1 %} selected {% endif %} {% endif %}>False</option>
+        </select>
+          {% endif %}
+          {% endif %}
+
+
+        </div> </div> 
+
+
+
+
+      <div class="col">
+        <div class="md-form">
+          <label  class="form-control-sm">Submit</label>
+          <br />
+          <button type="submit" class="btn btn-primary btn-sm">
+            {% if order %}Save{% endif %}
+          </button>
+        </div>
+      </div>
+
+      </div>
+
+
+
+
+
+
+
+
+
+
+
+        
+      
+      
+      
+      
+            
+        
+
+
+      </form>
+    </div>
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js"></script>
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+  </body>
+</html>

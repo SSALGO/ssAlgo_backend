@@ -1,0 +1,67 @@
+{% extends 'base.html' %}   
+{% block content %}  
+<div class="container mt-4">  
+    <h2>Trades History</h2>  
+    <!-- Pagination -->  
+    <form action="/historicalbacktest" method="GET">  
+        <div class="form-group">  
+            <label for="start_date">Start Date:</label>  
+            <input type="date" id="start_date" name="start_date" class="form-control" onchange="this.form.submit()"  
+            {% if selected_start_date %} value="{{ selected_start_date }}"  {% endif %}>  
+        </div>  
+        <div class="form-group">  
+            <label for="end_date">End Date:</label>  
+            <input type="date" id="end_date" name="end_date" class="form-control" onchange="this.form.submit()"  
+            {% if selected_end_date %} value="{{ selected_end_date }}" {% endif %}>  
+        </div>  
+    </form>  
+    <div class="mt-3">  
+        <h5>Total PNL: <span style="color: {% if pnl > 0 %}green{% else %}red{% endif %};">{{ pnl }}</span></h5>  
+    </div>  
+    <div class="table-responsive">  
+        <table class="table table-responsive">  
+            <thead>  
+                <tr>  
+                    <th>PNL</th>  
+                    <th>Option Name</th>  
+                    <th>Time</th>  
+                    <th>Bot Name</th>  
+                    <th>Entry Price</th>  
+                    <th>Exit Price</th>  
+                    <th>Side</th>                    
+                    <th>Lot</th>  
+                    <th>Option Entry</th>  
+                    <th>Option Exit</th>  
+                    <th>Option Lot</th>  
+                    <th>Option Expiry</th>  
+                    <th>Live</th>  
+                    <th>Exit Time</th>  
+                </tr>  
+            </thead>  
+            <tbody>  
+                {% for item in data %}  
+                <tr>  
+                    <td style="color: {% if item.pnl > 0 %}green{% else %}red{% endif %};">{{ item.pnl }}</td>  
+                    <td>{{ item.optionname }}</td>  
+                    <td>{{ item.time }}</td>  
+                    <td>{{ item.botname }}</td>  
+                    <td>{{ item.entry_price }}</td>  
+                    <td>{{ item.current_price }}</td>  
+                    <td>{{ item.side }}</td>  
+                    <td>{{ item.lot }}</td>  
+                    <td>{{ item.optionentry }}</td>  
+                    <td>{{ item.optionexit }}</td>  
+                    <td>{{ item.optionlot }}</td>  
+                    <td>{{ item.optionexpiry }}</td>  
+                    <td>{{ item.live }}</td>  
+                    <td>{{ item.exittime }}</td>  
+                </tr>  
+                {% endfor %}  
+            </tbody>  
+        </table>  
+    </div>  
+    
+</div>  
+
+<!-- Bootstrap JS -->  
+{% endblock %}  

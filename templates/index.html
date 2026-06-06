@@ -1,0 +1,464 @@
+{% extends 'base.html' %} {% block content %}
+
+<!-- Resources -->
+<script src="https://cdn.amcharts.com/lib/5/index.js"></script>
+<script src="https://cdn.amcharts.com/lib/5/xy.js"></script>
+<script src="https://cdn.amcharts.com/lib/5/stock.js"></script>
+<script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script>
+
+
+<div class="container">
+<div class="row">
+  <div class="col">
+    1
+  </div>
+  <div class="col">
+    1
+  </div>
+  <div class="col">
+    1
+  </div>
+  <div class="col">
+    1
+  </div>
+  <div class="col">
+    1
+  </div>
+  <div class="col">
+    1
+  </div>
+  <div class="col">
+    1
+  </div>
+</div>
+
+</div>
+<div class="container custom-container mt-5 text-start">
+  <div class="row">
+    
+    <div class="col">
+      
+  <h3>Order Form</h3>
+  <form id="myForm" method="post" action="/index">
+    <!-- Replace "submit.php" with your form submission endpoint -->
+    <div class="row">
+      <div class="col">
+        <div class="md-form">
+          <label for="trigger_price" class="form-control-sm">Trigger Price</label>
+          <input
+          required="True"
+            type="number"
+            step="0.01"
+            name="trigger_price"
+            id="trigger_price"
+            class="form-control form-control-sm"
+          />
+        </div>
+      </div>
+      <div class="col">
+        <div class="md-form">
+          <label for="trigger_type" class="form-control-sm">Trigger Type</label>
+          <select
+          required="True"
+            class="form-control form-control-sm"
+            name="trigger_type"
+            id="trigger_type"
+            data-mdb-filter="true"
+          >
+            
+          <option value="On Spot">On Spot</option>
+          <option value="On Premium">On Premium</option>
+          <option value="On Future">On Future</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="md-form">
+          <label for="symbol" class="form-control-sm">Symbol </label>
+          <select name="symbol" required="True" id="symbol" class="form-control form-control-sm">
+            <option value="BANKNIFTY">BANKNIFTY</option>
+            <option value="NIFTY50">NIFTY50</option>
+            <option value="FINNIFTY">FINNIFTY</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="md-form">
+      <label for="comparator_type" class="form-control-sm">Comparator</label>
+      <select name="comparator_type" required="True" id="comparator_type" class="form-control form-control-sm">
+        <option value=">=">>=</option>
+        <option value="<="><=</option>
+      </select>
+    </div>
+      </div>
+
+      <div class="col">
+    <div class="md-form">
+      <label for="option_type" class="form-control-sm">Option/Future</label>
+      <select name="option_type" required="True" id="option_type" class="form-control form-control-sm">
+        <option value="CE">CE</option>
+        <option value="PE">PE</option>
+        <option value="FUT">FUT</option>
+      </select>
+    </div></div>
+<div class="col">
+        <div class="md-form ">
+      <label for="strike" class="form-control-sm">Strike</label>
+      <select name="strike" required="True" id="strike" class="form-control form-control-sm">
+        <option value="0">ATM</option>
+        <option value="1">OTM+1</option>
+        <option value="-1">ITM+1</option>
+        <option value="2">OTM+2</option>
+        <option value="-2">ITM+2</option>
+        <option value="3">OTM+3</option>
+        <option value="-3">ITM+3</option>
+        <option value="4">OTM+4</option>
+        <option value="-4">ITM+4</option>
+        <option value="5">OTM+5</option>
+        <option value="-5">ITM+5</option>
+      </select>
+    </div>
+      </div>
+
+
+      <div class="col">
+            <div class="md-form">
+      <label for="lot" class="form-control-sm">Lot</label>
+      <input type="number" required="True" name="lot" id="lot" value="1" class="form-control form-control-sm" />
+    </div>
+      </div>
+
+</div>
+
+
+
+
+      
+      </div>
+  <div class="row">
+      <div class="col">
+        <div class="md-form">
+          <label class="form-control-sm" for="trail">Trail</label>
+          <br/>
+          <input type="hidden"  class="form-control-sm" name="trail" id="trail" value="1" />
+      <input type="checkbox"  class="form-control-sm" name="trail" id="trail" value="0" />
+      
+    </div>
+      </div>
+
+      <div class="col"><div class="md-form">
+      <label for="trail_stoploss" class="form-control-sm">TSL</label>
+            <input
+            required="True"
+        type="number"
+        name="trail_stoploss"
+        id="trail_stoploss"
+        value="50"
+        class="form-control form-control-sm"
+      />
+
+    </div>
+      
+    </div>
+
+    <div class="col">
+      
+        <div class="md-form">
+      <label for="tp_1" class="form-control-sm">TP 1</label>
+
+      <input type="text" name="tp_1" required="True"  id="tp_1" value="100" class="form-control form-control-sm" />
+    </div>
+
+
+      </div>
+
+      <div class="col">
+        <div class="md-form">
+      <label for="tp_2" class="form-control-sm">TP 2</label>
+
+      <input type="number" name="tp_2" required="True" value="150" id="tp_2" class="form-control form-control-sm" />
+    </div>
+      </div>
+      <div class="col">
+        <div class="md-form">
+      <label for="sl" class="form-control-sm">SL</label>
+
+      <input type="number" name="sl" id="sl" value="50" required="True" class="form-control form-control-sm" />
+    </div>
+      </div>
+      <div class="col">
+        <label for="sub" class="form-control-sm">Submit</label>
+        <br/>
+        <button type="submit" class="btn btn-primary form-control-sm">Submit</button>
+      </div>
+
+
+</div>
+</form>
+
+    </div>
+    
+    </div>
+    
+    
+  </div>
+
+    <!-- Trigger Price (Float) -->
+
+    <!-- Trigger Type (String) -->
+
+    <!-- Symbol (String) -->
+
+    <!-- Comparator Type (String) -->
+    
+
+    <!-- Option Type (String) -->
+    
+
+    <!-- Strike (String) -->
+
+
+    <!-- Lot (Integer) -->
+
+
+    <!-- Trail (Boolean) -->
+    
+
+    <!-- Trail Stop Loss (String) -->
+    
+    <!-- TP 1 (Float) -->
+
+    <!-- TP 2 (Float) -->
+
+
+    <!-- Stop Loss (Float) -->
+
+
+    <!-- Option (String) -->
+
+    <!-- Option Price (Float) -->
+
+    <!-- Exchange (String) -->
+
+    <!-- ATM Strike (Integer) -->
+
+    <!-- B Index (Integer) -->
+
+    <!-- Option Lot (Integer) -->
+    <!-- Other Params (Dictionary) - You can handle this as needed, possibly as JSON -->
+    <!-- You may need JavaScript to handle complex data like a dictionary -->
+
+</div>
+
+<div class="container mt-4" style="max-height: 600px;overflow-x: auto;">
+  <h2>Orders</h2>
+  <table class="table table-bordered">
+      <thead>
+          <tr>
+              <th>ID</th>
+              <th>Time</th>
+              <th>Symbol</th>
+              <th>Trigger Type</th>
+              <th>Trigger Price</th>
+              <th>Option Type</th>
+              <th>Cmp</th>
+              <th>Strike</th>
+              <th>Lots</th>
+              <th>TSL</th>
+              <th>TP1</th>
+              <th>TP2</th>
+              <th>SL</th>
+              <!-- Add more headers as needed -->
+          </tr>
+      </thead>
+      <tbody>
+          {% for order in orders %}
+          <tr>
+              <td>{{ order["_id"] }}</td>
+              <td>{{ order["time"] }}</td>
+              <td>{{ order["symbol"] }}</td>
+              <td contenteditable="true">{{ order["trigger_type"] }}</td>
+              <td contenteditable="true" >{{ order["trigger_price"] }}</td>
+              <td>
+                <select class="form-control" contenteditable="true">
+                    <option value="CE" {% if order['option_type'] == 'CE' %} selected {% endif %}>CE</option>
+                    <option value="PE" {% if order['option_type'] == 'PE' %} selected {% endif %}>PE</option>
+                </select>
+            </td>
+            <td>
+              <select class="form-control" contenteditable="true">
+                  <option value=">=" {% if order['comparator_type'] == '>=' %} selected {% endif %}>>=</option>
+                  <option value="<=" {% if order['comparator_type'] == '<=' %} selected {% endif %}><=</option>
+              </select>
+          </td>
+              <td contenteditable="true">{{ order['strike'] }}</td>
+                    <td contenteditable="true">{{ order['lot'] }}</td>
+                    <td contenteditable="true">{{ order['trail_stoploss'] }}</td>
+                    <td contenteditable="true">{{ order['tp_1'] }}</td>
+                    <td contenteditable="true">{{ order['tp_2'] }}</td>
+                    <td contenteditable="true">{{ order['sl'] }}</td>
+              <!-- Add more cells as needed -->
+          </tr>
+          {% endfor %}
+      </tbody>
+  </table>
+</div>
+
+<div class="container">
+  <div class="row">
+    <div class="col">1 of 2</div>
+    <div class="col">2 of 2</div>
+  </div>
+  <div class="row">
+    <div class="col">1 of 3</div>
+    <div class="col">2 of 3</div>
+    <div class="col">3 of 3</div>
+  </div>
+
+
+</div>
+<h2>Stock Trades Management</h2>
+
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Stock</th>
+                <th>Quantity</th>
+                <th>Price</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- Rows will be dynamically added here -->
+        </tbody>
+    </table>
+
+    <a href="#" class="add-button" onclick="openModal()">Add Trade</a>
+
+    <!-- Modal for adding or editing a trade -->
+    <div id="tradeModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <h3>Add/Edit Trade</h3>
+            <form id="tradeForm">
+                <label for="stock">Stock:</label>
+                <input type="text" id="stock" name="stock" required>
+                <br>
+                <label for="quantity">Quantity:</label>
+                <input type="number" id="quantity" name="quantity" required>
+                <br>
+                <label for="price">Price:</label>
+                <input type="number" id="price" name="price" required>
+                <br>
+                <button type="button" onclick="saveTrade()">Save</button>
+            </form>
+        </div>
+    </div>
+    
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js"></script>
+    <script>
+      $(document).ready(function () {
+
+        
+          // Send updated data to the server on cell blur
+          $('td[contenteditable="true"]').on('blur', function () {
+              const orderId = $(this).closest('tr').data('id');
+              const columnName = $(this).index();
+              let columnValue = $(this).text();
+              console.log(orderId)
+  
+              // Custom validation for the "Strike" column
+              if ($(this).data('min') !== undefined && $(this).data('max') !== undefined) {
+                  columnValue = Math.max($(this).data('min'), Math.min(columnValue, $(this).data('max')));
+                  $(this).text(columnValue); // Update the displayed value after validation
+              }
+  
+              $.ajax({
+                  url: '/update_order',
+                  type: 'POST',
+                  contentType: 'application/json;charset=UTF-8',
+                  data: JSON.stringify({ id: orderId, column: columnName, value: columnValue }),
+                  success: function (response) {
+                      console.log(response);
+                  },
+                  error: function (error) {
+                      console.error(error);
+                  }
+              });
+          });
+  
+          // Send updated data to the server on select change
+          $('select[contenteditable="true"]').on('change', function () {
+              const orderId = $(this).closest('tr').data('id');
+              const columnName = $(this).index();
+              const columnValue = $(this).val();
+  
+              $.ajax({
+                  url: '/update_order',
+                  type: 'POST',
+                  contentType: 'application/json;charset=UTF-8',
+                  data: JSON.stringify({ id: orderId, column: columnName, value: columnValue }),
+                  success: function (response) {
+                      console.log(response);
+                  },
+                  error: function (error) {
+                      console.error(error);
+                  }
+              });
+          });
+      });
+  </script>
+  <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"></script>
+  
+    <script>
+      // Function to update the table data
+      function updateTable() {
+          $.ajax({
+              url: '/index',  // Create a new route to handle data retrieval
+              type: 'GET',
+              success: function(data) {
+                  // Update the table body with new data
+                  $('#ordersTable tbody').html(data);
+              },
+              complete: function() {
+                  // Schedule the next update in 3 seconds
+                  setTimeout(updateTable, 3000);
+              }
+          });
+      }
+  
+      // Initial call to start the update process
+      updateTable();
+      
+      
+  </script>
+  
+    <script>
+        function openModal() {
+            document.getElementById('tradeModal').style.display = 'block';
+        }
+
+        function closeModal() {
+            document.getElementById('tradeModal').style.display = 'none';
+        }
+
+        function saveTrade() {
+            // Placeholder function for saving trade
+            const stock = document.getElementById('stock').value;
+            const quantity = document.getElementById('quantity').value;
+            const price = document.getElementById('price').value;
+
+            // Perform validation and save logic here (you would replace this with AJAX calls to a server)
+            console.log('Saving Trade:', { stock, quantity, price });
+
+            // Close the modal after saving
+            closeModal();
+        }
+    </script>
+  {% endblock %}
+

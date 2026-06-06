@@ -1,0 +1,224 @@
+{% extends 'base.html' %} {% block content %}
+
+<style type="text/css">
+  .dropbtn {
+  background-color: #04AA6D;
+  color: white;
+  padding: 16px;
+  font-size: 16px;
+  border: none;
+  cursor: pointer;
+  }
+
+  .dropbtn:hover, .dropbtn:focus {
+    background-color: #3e8e41;
+  }
+
+  #myInput {
+    box-sizing: border-box;
+    background-image: url('searchicon.png');
+    background-position: 14px 12px;
+    background-repeat: no-repeat;
+    font-size: 16px;
+    padding: 14px 20px 12px 45px;
+    border: none;
+    border-bottom: 1px solid #ddd;
+  }
+
+  #myInput:focus {outline: 3px solid #ddd;}
+
+  .dropdown {
+    position: relative;
+    display: inline-block;
+  }
+
+  .dropdown-content {
+    display: none;
+    position: absolute;
+    background-color: #f6f6f6;
+    min-width: 230px;
+    overflow: auto;
+    border: 1px solid #ddd;
+    z-index: 1;
+  }
+
+  .dropdown-content a {
+    color: black;
+    padding: 12px 16px;
+    text-decoration: none;
+    display: block;
+  }
+
+  .dropdown a:hover {background-color: #ddd;}
+
+  .show {display: block;}
+</style>
+
+<div class="container mt-4">
+  <h2>Admin Dashboard</h2>
+
+  <div class="row">
+      <div class="col mb-2">
+        <h4><a href="{{ url_for('get_users') }}"><span class="badge bg-secondary bg-warning">Users</span></a></h4>
+      </div>
+      <div class="col mb-2">
+        <h4><a href="{{ url_for('get_subscriptions') }}"><span class="badge bg-secondary bg-warning">Subscription</span></a></h4>
+      </div>
+      <div class="col mb-2">
+        <h4><a href="{{ url_for('get_apis') }}"><span class="badge bg-secondary bg-warning">API</span></a></h4>
+      </div>
+      <div class="col mb-2">
+        <h4><a href="{{ url_for('get_strategy') }}"><span class="badge bg-secondary bg-warning">Strategys</span></a></h4>
+      </div>
+
+  </div>
+  <div class="container mt-5">
+    <h2>Control Dashboard</h2>
+    
+    <div class="table-responsive">
+    <table id="controlsTable" class="table table-bordered table-sm" style="max-height: 50px;overflow-x: auto;overflow-y: auto;">
+        <thead>
+            <tr>
+                <th>Symbol</th>
+                <th>Control</th>
+                <th>Buy Trade</th>
+                <th>Sell Trade</th>
+            </tr>
+        </thead>
+        <tbody>
+          {% for order in controls %}
+      <tr>
+        <td>{{ order["symbol"] }}</td>
+
+        <td>
+          {% if not order["controlmode"] %}
+            <a href="{{ url_for('start_control', order_time=order['symbol']) }}"
+            class="btn btn-success btn-sm"
+            >Start</a>
+          {% else %}
+            <a href="{{ url_for('stop_control', order_time=order['symbol']) }}"
+            class="btn btn-danger btn-sm"
+            >Stop</a>
+            {% endif %}
+
+        </td>
+        <td>
+          {% if not  order["Buytrade"] %}
+            <a href="{{ url_for('start_cebuy', order_time=order['symbol']) }}"
+            class="btn btn-success btn-sm"
+            >Buy</a>
+          {% else %}
+            <a href="{{ url_for('start_cesell', order_time=order['symbol']) }}"
+            class="btn btn-danger btn-sm"
+            >Buy Exit</a>
+            {% endif %}
+
+        </td>
+
+        <td>
+          {% if not order["Selltrade"] %}
+            <a href="{{ url_for('start_pebuy', order_time=order['symbol']) }}"
+            class="btn btn-success btn-sm"
+            >Sell</a>
+          {% else %}
+            <a href="{{ url_for('start_pesell', order_time=order['symbol']) }}"
+            class="btn btn-danger btn-sm"
+            >Sell Exit</a>
+            {% endif %}
+
+        </td>
+ 
+
+        
+      </tr>
+      {% endfor %}
+
+
+        </tbody>
+    </table></div>
+</div>
+<hr>
+<div class="container mt-5">
+  
+  <h2>Strategy Input Dashboard</h2>
+    
+    <div class="table-responsive">
+    <table id="controlsTable" class="table table-bordered table-sm" style="max-height: 50px;overflow-x: auto;overflow-y: auto;">
+        <thead>
+            <tr>
+                <th>Symbol</th>
+                <th>R1</th>
+                <th>K1</th>
+                <th>R2</th>
+                <th>K2</th>
+                <th>TF</th>
+                <th>Control</th>
+                
+            </tr>
+        </thead>
+        <tbody>
+          {% for order in strategyco %}
+      <tr>
+        <td>{{ order["strategy"] }}</td>
+
+        <td>
+          {{ order["r1"] }}
+
+        </td>
+        <td>
+          {{ order["k1"] }}
+
+        </td>
+        <td>
+          {{ order["r2"] }}
+
+        </td>
+        <td>
+          {{ order["k2"] }}
+
+        </td>
+        <td>
+          {{ order["timeframe"] }}
+
+        </td>
+
+
+        <td>
+          <a href="{{ url_for('edit_strategyinput_form', order_time=order['strategy']) }}"
+            class="btn btn-primary btn-sm"
+            >Modify</a>
+          {% if not order["update"] %}
+            <a href="{{ url_for('start_strategyco', order_time=order['strategy']) }}"
+            class="btn btn-success btn-sm"
+            >ON</a>
+          {% else %}
+            <a href="{{ url_for('stop_strategyco', order_time=order['strategy']) }}"
+            class="btn btn-danger btn-sm"
+            >OFF</a>
+            {% endif %}
+
+        </td>
+ 
+
+        
+      </tr>
+      {% endfor %}
+
+
+        </tbody>
+    </table></div>
+
+</div>
+
+
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js"></script>
+<script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-select/1.13.1/js/bootstrap-select.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js" ></script>
+
+
+
+
+
+{% endblock %}

@@ -1,0 +1,526 @@
+{% extends 'base.html' %} {% block content %}
+    <div class="container mt-4">
+      <div class="row mb-3">
+        <div class="col">
+          <a href="{{ url_for('index') }}" class="btn btn-sm" style="background-color: darkorange; color: white;">← Back to Index</a>
+        </div>
+
+      </div>
+      <h2>{% if broker_data[selected_broker] %}Edit API{% else %}Add API{% endif %}</h2>
+
+      <!-- Broker Selection Form -->
+      <form method="post" action="{{ action_url1 }}">
+        <div class="row">
+          <div class="col">
+            <h4 class="mb-3">Select a broker:</h4>
+            <div class="broker-selection">
+              <div class="row broker-cards">
+                {% for broker in ['zerodha' ,'fyers', 'angelone', 'dhan', 'mofs','aliceblue', 'shoonya', 'smc', 'mstock' ] %}
+                <div class="col-md-4 mb-3">
+                  <div class="card broker-card {% if selected_broker == broker %}selected{% endif %}" onclick="document.getElementById('{{ broker }}').checked = true; this.closest('form').submit();">
+                    <div class="card-body text-center">
+                      <input type="radio" id="{{ broker }}" name="selectedbroker" value="{{ broker }}"
+                             {% if selected_broker == broker %}checked{% endif %} class="d-none">
+                      <div class="broker-initials mb-2 {% if selected_broker == broker %}selected-initials{% endif %}">{{ broker|replace('_', ' ')|title }}</div>
+                      <h5 class="broker-name">{% if broker == 'mofs' %}Motilal Oswal{% elif broker == 'smc' %}SMC{% else %}{{ broker|title }}{% endif %}</h5>
+                    </div>
+                  </div>
+                </div>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        </div>
+      </form>
+
+      <style>
+        .broker-cards {
+          display: flex;
+          flex-wrap: wrap;
+        }
+        .broker-card {
+          cursor: pointer;
+          transition: all 0.3s ease;
+          height: 100%;
+          border: 2px solid #e0e0e0;
+          background: #fff;
+          min-height: 120px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .broker-card:hover {
+          transform: translateY(-5px);
+          box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+          border-color: #007bff;
+        }
+        .broker-card.selected {
+          border-color: #007bff;
+          background-color: #f0f7ff;
+          box-shadow: 0 5px 15px rgba(0,123,255,0.12);
+        }
+        .broker-initials {
+          display: inline-block;
+          font-size: 1.3rem;
+          font-weight: 600;
+          letter-spacing: 1px;
+          color: #555;
+          background: #f3f3f3;
+          border-radius: 50%;
+          width: 48px;
+          height: 48px;
+          line-height: 48px;
+          margin-bottom: 10px;
+          transition: background 0.2s, color 0.2s;
+        }
+        .broker-initials.selected-initials {
+          background: #007bff;
+          color: #fff;
+        }
+        .broker-name {
+          font-size: 16px;
+          margin-bottom: 0;
+          font-weight: 500;
+          color: #222;
+        }
+      </style>
+
+      <!-- API Configuration Form -->
+      <form method="post" action="{{ action_url }}">
+        <div class="row">
+          <!-- Hidden ID field -->
+          <input type="hidden" name="_id" value="{% if broker_data[selected_broker] %}{{ broker_data[selected_broker]['_id'] }}{% endif %}">
+          
+          <!-- Broker field -->
+          <div class="col">
+            <div class="md-form">
+              <label for="broker" class="form-control-sm">Broker</label>
+              <input type="text" class="form-control form-control-sm" id="broker" name="broker"
+                     value="{{ selected_broker }}" required readonly>
+            </div>
+          </div>
+
+          {% if selected_broker == 'shoonya' %}
+            <!-- Shoonya specific fields -->
+            <div class="col">
+              <div class="md-form">
+                <label for="usr" class="form-control-sm">Shoonya ID</label>
+                <input type="text" class="form-control form-control-sm" id="usr" name="usr"
+                       value="{{ broker_data[selected_broker]['usr'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="pwd" class="form-control-sm">Password</label>
+                <input type="password" class="form-control form-control-sm" id="pwd" name="pwd"
+                       value="{{ broker_data[selected_broker]['pwd'] }}" required>
+                <button type="button" onclick="togglePassword()" class="btn btn-sm btn-secondary">Show</button>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="factor2" class="form-control-sm">Factor2</label>
+                <input type="text" class="form-control form-control-sm" id="factor2" name="factor2"
+                       value="{{ broker_data[selected_broker]['factor2'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="apikey" class="form-control-sm">Api Key</label>
+                <input type="text" class="form-control form-control-sm" id="apikey" name="apikey"
+                       value="{{ broker_data[selected_broker]['apikey'] }}" required>
+              </div>
+            </div>
+
+          {% elif selected_broker == 'aliceblue' %}
+            <!-- AliceBlue specific fields -->
+            <div class="col">
+              <div class="md-form">
+                <label for="apikey" class="form-control-sm">AliceBlue User ID</label>
+                <input type="text" class="form-control form-control-sm" id="apikey" name="apikey"
+                       value="{{ broker_data[selected_broker]['apikey'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="alice_password" class="form-control-sm">Password</label>
+                <input type="password" class="form-control form-control-sm" id="alice_password" name="alice_password"
+                       value="{{ broker_data[selected_broker]['alice_password'] }}" required>
+                <button type="button" onclick="toggleAlicePassword()" class="btn btn-sm btn-secondary">Show</button>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="app_key" class="form-control-sm">App Key</label>
+                <input type="text" class="form-control form-control-sm" id="app_key" name="app_key"
+                       value="{{ broker_data[selected_broker]['app_key'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="auth_code" class="form-control-sm">Auth Code</label>
+                <input type="text" class="form-control form-control-sm" id="auth_code" name="auth_code"
+                       value="{{ broker_data[selected_broker]['auth_code'] }}">
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="apisecret" class="form-control-sm">API Secret / Secret Key</label>
+                <input type="text" class="form-control form-control-sm" id="apisecret" name="apisecret"
+                       value="{{ broker_data[selected_broker]['apisecret'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="totp_key" class="form-control-sm">TOTP Key</label>
+                <input type="text" class="form-control form-control-sm" id="totp_key" name="totp_key"
+                       value="{{ broker_data[selected_broker]['totp_key'] }}">
+              </div>
+            </div>
+
+          {% elif selected_broker == 'fyers' %}
+            <!-- Fyers specific fields -->
+            <div class="col">
+              <div class="md-form">
+                <label for="fy_id" class="form-control-sm">FY User ID</label>
+                <input type="text" class="form-control form-control-sm" id="fy_id" name="fy_id"
+                       value="{{ broker_data[selected_broker]['fy_id'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="client_id" class="form-control-sm">App ID</label>
+                <input type="text" class="form-control form-control-sm" id="client_id" name="client_id"
+                       value="{{ broker_data[selected_broker]['client_id'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="secret_key" class="form-control-sm">Secret Key</label>
+                <input type="text" class="form-control form-control-sm" id="secret_key" name="secret_key"
+                       value="{{ broker_data[selected_broker]['secret_key'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="totp_key" class="form-control-sm">TOTP Key</label>
+                <input type="text" class="form-control form-control-sm" id="totp_key" name="totp_key"
+                       value="{{ broker_data[selected_broker]['totp_key'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="pin" class="form-control-sm">PIN</label>
+                <input type="password" class="form-control form-control-sm" id="pin" name="pin"
+                       value="{{ broker_data[selected_broker]['pin'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="redirect_uri" class="form-control-sm">Redirect URI</label>
+                <input type="text" class="form-control form-control-sm" id="redirect_uri" name="redirect_uri"
+                       value="{{ broker_data[selected_broker]['redirect_uri']|default('https://127.0.0.1:5000/') }}" required>
+              </div>
+            </div>
+            {% if broker_data[selected_broker] %}
+                <a href="https://api-t1.fyers.in/api/v3/generate-authcode?client_id={{ broker_data[selected_broker]['client_id'] }}&redirect_uri={{ broker_data[selected_broker]['redirect_uri'] }}&response_type=code&state=sample_state" 
+                   class="btn btn-primary">
+                    Activate
+                </a>
+            {% endif %}
+
+          {% elif selected_broker == 'angelone' %}
+            <!-- Angel One specific fields -->
+            <div class="col">
+              <div class="md-form">
+                <label for="client_id" class="form-control-sm">Client ID</label>
+                <input type="text" class="form-control form-control-sm" id="client_id" name="client_id"
+                       value="{{ broker_data[selected_broker]['client_id'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="apikey" class="form-control-sm">API Key</label>
+                <input type="text" class="form-control form-control-sm" id="apikey" name="apikey"
+                       value="{{ broker_data[selected_broker]['apikey'] }}" required>
+              </div>
+            </div>
+            
+            <div class="col">
+              <div class="md-form">
+                <label for="pwd" class="form-control-sm">PIN</label>
+                <input type="password" class="form-control form-control-sm" id="pwd" name="pwd"
+                       value="{{ broker_data[selected_broker]['pwd'] }}" required>
+                <button type="button" onclick="togglePassword()" class="btn btn-sm btn-secondary">Show</button>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="totp_key" class="form-control-sm">TOTP Key</label>
+                <input type="text" class="form-control form-control-sm" id="totp_key" name="totp_key"
+                       value="{{ broker_data[selected_broker]['totp_key'] }}" required>
+              </div>
+            </div>
+          {% elif selected_broker == 'dhan' %}
+            <!-- Dhan specific fields -->
+            <div class="col">
+              <div class="md-form">
+                <label for="client_id" class="form-control-sm">Client ID</label>
+                <input type="text" class="form-control form-control-sm" id="client_id" name="client_id"
+                       value="{{ broker_data[selected_broker]['client_id'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="access_token" class="form-control-sm">Access Token</label>
+                <input type="text" class="form-control form-control-sm" id="access_token" name="access_token"
+                       value="{{ broker_data[selected_broker]['access_token'] }}" required>
+              </div>
+            </div>
+          {% elif selected_broker == 'mofs' %}
+            <!-- Motilal Oswal specific fields -->
+            <div class="col">
+              <div class="md-form">
+                <label for="client_id" class="form-control-sm">Client ID</label>
+                <input type="text" class="form-control form-control-sm" id="client_id" name="client_id"
+                       value="{{ broker_data[selected_broker]['client_id'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="password" class="form-control-sm">Password</label>
+                <input type="password" class="form-control form-control-sm" id="password" name="password"
+                       value="{{ broker_data[selected_broker]['password'] }}" required>
+                <button type="button" onclick="toggleMstockPassword()" class="btn btn-sm btn-secondary">Show</button>
+              </div>
+            </div>
+            
+            <div class="col">
+              <div class="md-form">
+                <label for="_2_FA" class="form-control-sm">2FA (DOB: DD/MM/YYYY)</label>
+                <input type="text" class="form-control form-control-sm" id="_2_FA" name="_2_FA"
+                       value="{{ broker_data[selected_broker]['_2_FA'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="totp_key" class="form-control-sm">TOTP Key</label>
+                <input type="text" class="form-control form-control-sm" id="totp_key" name="totp_key"
+                       value="{{ broker_data[selected_broker]['totp_key'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="api_key" class="form-control-sm">API Key</label>
+                <input type="text" class="form-control form-control-sm" id="api_key" name="api_key"
+                       value="{{ broker_data[selected_broker]['api_key'] }}" required>
+              </div>
+            </div>
+          {% elif selected_broker == 'zerodha' %}
+            <!-- Zerodha specific fields -->
+            <div class="col">
+              <div class="md-form">
+                <label for="user_id" class="form-control-sm">User ID</label>
+                <input type="text" class="form-control form-control-sm" id="user_id" name="user_id"
+                       value="{{ broker_data[selected_broker]['user_id'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="password" class="form-control-sm">Password</label>
+                <input type="password" class="form-control form-control-sm" id="password" name="password"
+                       value="{{ broker_data[selected_broker]['password'] }}" required>
+                <button type="button" onclick="toggleZerodhaPassword()" class="btn btn-sm btn-secondary">Show</button>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="totp_key" class="form-control-sm">TOTP Key</label>
+                <input type="text" class="form-control form-control-sm" id="totp_key" name="totp_key"
+                       value="{{ broker_data[selected_broker]['totp_key'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="api_key" class="form-control-sm">API Key</label>
+                <input type="text" class="form-control form-control-sm" id="api_key" name="api_key"
+                       value="{{ broker_data[selected_broker]['api_key'] }}" required>
+              </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+                <label for="api_secret" class="form-control-sm">API Secret</label>
+                <input type="text" class="form-control form-control-sm" id="api_secret" name="api_secret"
+                       value="{{ broker_data[selected_broker]['api_secret'] }}" required>
+              </div>
+            </div>
+            {% elif selected_broker == 'smc' %}
+                <!-- SMC specific fields -->
+                <div class="col">
+                  <div class="md-form">
+                    <label for="client_id" class="form-control-sm">Client ID</label>
+                    <input type="text" class="form-control form-control-sm" id="client_id" name="client_id"
+                          value="{{ broker_data[selected_broker]['client_id'] }}" required>
+                  </div>
+                </div>
+                <div class="col">
+                  <div class="md-form">
+                    <label for="interactive_key" class="form-control-sm">Interactive API Key</label>
+                    <input type="text" class="form-control form-control-sm" id="interactive_key" name="interactive_key"
+                          value="{{ broker_data[selected_broker]['interactive_key'] }}" required>
+                  </div>
+                </div>
+                <div class="col">
+                  <div class="md-form">
+                    <label for="interactive_secret" class="form-control-sm">Interactive Secret Key</label>
+                    <input type="text" class="form-control form-control-sm" id="interactive_secret" name="interactive_secret"
+                          value="{{ broker_data[selected_broker]['interactive_secret'] }}" required>
+                  </div>
+                </div>
+                <div class="col">
+                  <div class="md-form">
+                    <label for="source" class="form-control-sm">Source</label>
+                    <input type="text" class="form-control form-control-sm" id="source" name="source"
+                          value="{{ broker_data[selected_broker]['source']|default('WEBAPI') }}" required>
+                  </div>
+                </div>
+
+              {% elif selected_broker == 'mstock' %}
+                <!-- mStock specific fields -->
+                <div class="col">
+                  <div class="md-form">
+                    <label for="userid" class="form-control-sm">User ID</label>
+                    <input type="text" class="form-control form-control-sm" id="userid" name="userid"
+                          value="{{ broker_data[selected_broker]['userid'] }}" required>
+                  </div>
+                </div>
+                <div class="col">
+                  <div class="md-form">
+                    <label for="password" class="form-control-sm">Password</label>
+                    <input type="password" class="form-control form-control-sm" id="password" name="password"
+                          value="{{ broker_data[selected_broker]['password'] }}" required>
+                    <button type="button" onclick="toggleMstockPassword()" class="btn btn-sm btn-secondary">Show</button>
+                  </div>
+                </div>
+                <div class="col">
+                  <div class="md-form">
+                    <label for="apikey" class="form-control-sm">API Key</label>
+                    <input type="text" class="form-control form-control-sm" id="apikey" name="apikey"
+                          value="{{ broker_data[selected_broker]['apikey'] }}" required>
+                  </div>
+                </div>
+                <div class="col">
+                  <div class="md-form">
+                    <label for="eemail" class="form-control-sm">Email</label>
+                    <input type="text" class="form-control form-control-sm" id="eemail" name="eemail"
+                          value="{{ broker_data[selected_broker]['eemail'] }}" required>
+                  </div>
+                </div>
+                <div class="col">
+                  <div class="md-form">
+                    <label for="epassword" class="form-control-sm">Email Password</label>
+                    <input type="password" class="form-control form-control-sm" id="epassword" name="epassword"
+                          value="{{ broker_data[selected_broker]['epassword'] }}" required>
+                    <button type="button" onclick="toggleEmailPassword()" class="btn btn-sm btn-secondary">Show</button>
+                  </div>
+                </div>
+              {% endif %}
+                
+          <!-- Submit Button -->
+          <div class="col">
+            <div class="md-form">
+              <label class="form-control-sm">Submit</label><br />
+              <button type="submit" class="btn btn-primary btn-sm">
+                {% if broker_data[selected_broker] %}Save{% else %}Add API{% endif %}
+              </button>
+            </div>
+          </div>
+        </div>
+      </form>
+    </div>
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js"></script>
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+    <script>
+      function togglePassword() {
+        const passwordField = document.getElementById("pwd");
+        const toggleButton = event.target;
+
+        if (passwordField.type === "password") {
+          passwordField.type = "text";
+          toggleButton.textContent = "Hide";
+        } else {
+          passwordField.type = "password";
+          toggleButton.textContent = "Show";
+        }
+      }
+      
+      function toggleMofsPassword() {
+        const passwordField = document.getElementById("password");
+        const toggleButton = event.target;
+
+        if (passwordField.type === "password") {
+          passwordField.type = "text";
+          toggleButton.textContent = "Hide";
+        } else {
+          passwordField.type = "password";
+          toggleButton.textContent = "Show";
+        }
+      }
+      
+      function toggleZerodhaPassword() {
+        const passwordField = document.getElementById("password");
+        const toggleButton = event.target;
+
+        if (passwordField.type === "password") {
+          passwordField.type = "text";
+          toggleButton.textContent = "Hide";
+        } else {
+          passwordField.type = "password";
+          toggleButton.textContent = "Show";
+        }
+      }
+
+      function toggleAlicePassword() {
+        const passwordField = document.getElementById("alice_password");
+        const toggleButton = event.target;
+
+        if (passwordField.type === "password") {
+          passwordField.type = "text";
+          toggleButton.textContent = "Hide";
+        } else {
+          passwordField.type = "password";
+          toggleButton.textContent = "Show";
+        }
+      }
+      
+      function toggleMstockPassword() {
+        const passwordField = document.getElementById("password");
+        const toggleButton = event.target;
+
+        if (passwordField.type === "password") {
+          passwordField.type = "text";
+          toggleButton.textContent = "Hide";
+        } else {
+          passwordField.type = "password";
+          toggleButton.textContent = "Show";
+        }
+      }
+      
+      function toggleEmailPassword() {
+        const passwordField = document.getElementById("email_password");
+        const toggleButton = event.target;
+
+        if (passwordField.type === "password") {
+          passwordField.type = "text";
+          toggleButton.textContent = "Hide";
+        } else {
+          passwordField.type = "password";
+          toggleButton.textContent = "Show";
+        }
+      }
+    </script>
+
+
+{% endblock %}

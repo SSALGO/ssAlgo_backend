@@ -1,0 +1,614 @@
+{% extends 'base1.html' %} {% block content %}
+
+<style>
+  :root {
+    --primary-color: #FF8C00; /* Dark Orange */
+    --primary-hover: #E67E00;
+    --secondary-color: #2C3E50; /* Dark blue-gray */
+    --text-color: #333333;
+    --light-bg: #F8F9FA;
+    --border-color: #E0E0E0;
+  }
+  
+  body {
+    background-color: var(--light-bg);
+  }
+  
+  .login-container {
+    max-width: 450px;
+    margin: 3rem auto;
+    padding: 2.5rem;
+    border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+    background-color: white;
+  }
+  
+  /* Chart container styling */
+  .chart-container {
+    width: 100%;
+    height: 200px;
+    margin-bottom: 2rem;
+    border-radius: 8px;
+    overflow: hidden;
+    background-color: #1a2632;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  }
+  
+  .login-header {
+    text-align: center;
+    margin-bottom: 2rem;
+  }
+  
+  .login-header h2 {
+    font-weight: 700;
+    color: var(--primary-color);
+    margin-bottom: 0.5rem;
+    letter-spacing: 0.5px;
+  }
+  
+  .login-header p {
+    color: var(--secondary-color);
+    font-size: 1rem;
+  }
+  
+  .login-header .trading-icon {
+    font-size: 2.5rem;
+    color: var(--primary-color);
+    margin-bottom: 1rem;
+  }
+  
+  .form-label {
+    font-weight: 500;
+    color: var(--secondary-color);
+  }
+  
+  .form-control {
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+  }
+  
+  .form-control:focus {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 0.2rem rgba(255, 140, 0, 0.25);
+  }
+  
+  .btn-trading {
+    background-color: var(--primary-color);
+    border-color: var(--primary-color);
+    color: white;
+    width: 100%;
+    padding: 0.75rem;
+    font-weight: 600;
+    border-radius: 6px;
+    transition: all 0.3s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  
+  .btn-trading:hover, .btn-trading:focus {
+    background-color: var(--primary-hover);
+    border-color: var(--primary-hover);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  }
+  
+  .login-footer {
+    text-align: center;
+    margin-top: 2rem;
+    color: var(--text-color);
+  }
+  
+  .login-footer a {
+    color: var(--primary-color);
+    text-decoration: none;
+    font-weight: 500;
+    transition: color 0.2s ease;
+  }
+  
+  .login-footer a:hover {
+    color: var(--primary-hover);
+    text-decoration: underline;
+  }
+  
+  .flashes {
+    list-style: none;
+    padding: 0.75rem 1.25rem;
+    margin-bottom: 1.5rem;
+    border-radius: 6px;
+    background-color: #f8d7da;
+    color: #721c24;
+    border-left: 4px solid #f5c6cb;
+  }
+  
+  /* Password field styling */
+  .password-field {
+    position: relative;
+  }
+  
+  .password-toggle {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--secondary-color);
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.2s ease;
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 5;
+  }
+  
+  .password-toggle:hover {
+    opacity: 1;
+  }
+  
+  .password-toggle:focus {
+    outline: none;
+  }
+  
+  .password-toggle i {
+    font-size: 16px;
+  }
+  
+  /* Trading-specific elements */
+  .market-indicator {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 1.5rem;
+    font-size: 0.85rem;
+  }
+  
+  .market-indicator .indicator {
+    display: flex;
+    align-items: center;
+    margin: 0 10px;
+  }
+  
+  .market-indicator .dot {
+    height: 8px;
+    width: 8px;
+    border-radius: 50%;
+    margin-right: 5px;
+  }
+  
+  .market-indicator .up {
+    background-color: #28a745;
+  }
+  
+  .market-indicator .down {
+    background-color: #dc3545;
+  }
+  
+  @media (max-width: 576px) {
+    .login-container {
+      margin: 1.5rem auto;
+      padding: 1.5rem;
+    }
+    
+    .login-header .trading-icon {
+      font-size: 2rem;
+    }
+    
+    .chart-container {
+      height: 150px;
+    }
+  }
+</style>
+
+<div class="container">
+  <div class="login-container">
+    <div class="login-header">
+      <div class="trading-icon">
+        <i class="fas fa-chart-line"></i>
+      </div>
+      <h2>SSALGO</h2>
+      <p>Algorithmic Trading Platform</p>
+    </div>
+    
+    <!-- Stock Chart Animation -->
+    <div class="chart-container">
+      <canvas id="stockChart"></canvas>
+    </div>
+    
+    <!-- Add Chart.js library -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3.0.1/build/global/luxon.min.js"></script>
+    
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        // Get the canvas element
+        const ctx = document.getElementById('stockChart').getContext('2d');
+        
+        // Generate initial candle data
+        const initialData = generateCandleData(30);
+        
+        // Add volume data
+        const volumeData = generateVolumeData(initialData);
+        
+        // Chart configuration
+        const config = {
+          type: 'candlestick',
+          data: {
+            datasets: [{
+              label: 'SSALGO Index',
+              data: initialData,
+              color: {
+                up: 'rgba(40, 167, 69, 1)',
+                down: 'rgba(220, 53, 69, 1)',
+              },
+              borderColor: function(ctx) {
+                return ctx.dataset.data[ctx.dataIndex].c >= ctx.dataset.data[ctx.dataIndex].o 
+                  ? 'rgba(40, 167, 69, 1)' 
+                  : 'rgba(220, 53, 69, 1)';
+              },
+              backgroundColor: function(ctx) {
+                return ctx.dataset.data[ctx.dataIndex].c >= ctx.dataset.data[ctx.dataIndex].o 
+                  ? 'rgba(40, 167, 69, 0.5)' 
+                  : 'rgba(220, 53, 69, 0.5)';
+              },
+              borderWidth: 2,
+              barPercentage: 0.8,
+              categoryPercentage: 0.8
+            }, {
+              type: 'bar',
+              label: 'Volume',
+              data: volumeData,
+              yAxisID: 'volume',
+              backgroundColor: function(ctx) {
+                const data = initialData[ctx.dataIndex];
+                return data.c >= data.o 
+                  ? 'rgba(40, 167, 69, 0.3)' 
+                  : 'rgba(220, 53, 69, 0.3)';
+              },
+              borderColor: function(ctx) {
+                const data = initialData[ctx.dataIndex];
+                return data.c >= data.o 
+                  ? 'rgba(40, 167, 69, 0.5)' 
+                  : 'rgba(220, 53, 69, 0.5)';
+              },
+              borderWidth: 1,
+              barPercentage: 0.8,
+              categoryPercentage: 0.8,
+              order: 1
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            layout: {
+              padding: {
+                left: 5,
+                right: 5,
+                top: 20,
+                bottom: 5
+              }
+            },
+            scales: {
+              x: {
+                display: true,
+                type: 'time',
+                time: {
+                  unit: 'minute',
+                  displayFormats: {
+                    minute: 'HH:mm'
+                  }
+                },
+                grid: {
+                  display: false,
+                  drawBorder: false
+                },
+                ticks: {
+                  color: 'rgba(255, 255, 255, 0.7)',
+                  font: {
+                    size: 9
+                  },
+                  maxRotation: 0,
+                  autoSkip: true,
+                  maxTicksLimit: 6
+                }
+              },
+              y: {
+                display: true,
+                position: 'right',
+                grid: {
+                  color: 'rgba(255, 255, 255, 0.05)',
+                  drawBorder: false
+                },
+                ticks: {
+                  color: 'rgba(255, 255, 255, 0.7)',
+                  font: {
+                    size: 9
+                  },
+                  count: 5,
+                  callback: function(value) {
+                    return value.toFixed(1);
+                  }
+                }
+              },
+              volume: {
+                display: true,
+                position: 'left',
+                grid: {
+                  display: false,
+                  drawBorder: false
+                },
+                ticks: {
+                  color: 'rgba(255, 255, 255, 0.5)',
+                  font: {
+                    size: 8
+                  },
+                  callback: function(value) {
+                    if (value >= 1000000) return (value / 1000000).toFixed(1) + 'M';
+                    if (value >= 1000) return (value / 1000).toFixed(0) + 'K';
+                    return value;
+                  }
+                },
+                max: Math.max(...volumeData.map(v => v.y)) * 1.5
+              }
+            },
+            plugins: {
+              legend: {
+                display: false
+              },
+              tooltip: {
+                enabled: true,
+                mode: 'index',
+                intersect: false,
+                backgroundColor: 'rgba(30, 41, 59, 0.9)',
+                titleColor: '#FF8C00',
+                bodyColor: 'white',
+                borderColor: '#FF8C00',
+                borderWidth: 1,
+                cornerRadius: 4,
+                padding: 8,
+                callbacks: {
+                  title: function(tooltipItems) {
+                    const date = new Date(tooltipItems[0].raw.x);
+                    return date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                  },
+                  label: function(context) {
+                    if (context.dataset.type === 'bar') {
+                      const volume = context.raw.y;
+                      if (volume >= 1000000) return 'Vol: ' + (volume / 1000000).toFixed(2) + 'M';
+                      if (volume >= 1000) return 'Vol: ' + (volume / 1000).toFixed(1) + 'K';
+                      return 'Vol: ' + volume;
+                    }
+                    
+                    const data = context.raw;
+                    return [
+                      'O: ' + data.o.toFixed(2),
+                      'H: ' + data.h.toFixed(2),
+                      'L: ' + data.l.toFixed(2),
+                      'C: ' + data.c.toFixed(2),
+                      'Chg: ' + ((data.c - data.o) / data.o * 100).toFixed(2) + '%'
+                    ];
+                  }
+                }
+              },
+              annotation: {
+                annotations: {
+                  line1: {
+                    type: 'line',
+                    yMin: initialData[initialData.length - 1].c,
+                    yMax: initialData[initialData.length - 1].c,
+                    borderColor: 'rgba(255, 140, 0, 0.5)',
+                    borderWidth: 1,
+                    borderDash: [5, 5],
+                  }
+                }
+              }
+            },
+            animation: {
+              duration: 300
+            },
+            hover: {
+              mode: 'index',
+              intersect: false
+            }
+          }
+        };
+        
+        // Create the chart
+        let stockChart = new Chart(ctx, config);
+        
+        // Add price label to the right side
+        function drawPriceLabel() {
+          const lastCandle = stockChart.data.datasets[0].data[stockChart.data.datasets[0].data.length - 1];
+          const lastPrice = lastCandle.c;
+          
+          ctx.save();
+          ctx.fillStyle = lastCandle.c >= lastCandle.o ? 'rgba(40, 167, 69, 1)' : 'rgba(220, 53, 69, 1)';
+          ctx.font = 'bold 12px Arial';
+          ctx.textAlign = 'right';
+          ctx.textBaseline = 'top';
+          ctx.fillText(lastPrice.toFixed(2), ctx.canvas.width - 10, 5);
+          ctx.restore();
+        }
+        
+        // Function to generate candle data with upward trend
+        function generateCandleData(count) {
+          let data = [];
+          let baseValue = 50;
+          let date = new Date();
+          
+          for (let i = 0; i < count; i++) {
+            // Generate candle with upward bias
+            const open = baseValue;
+            const close = baseValue + (Math.random() * 6 - 1.5); // More likely to close higher
+            const high = Math.max(open, close) + Math.random() * 2;
+            const low = Math.min(open, close) - Math.random() * 1;
+            
+            // Add some time (1 minute per candle)
+            date = new Date(date.getTime() - 60000);
+            
+            data.push({
+              x: date,
+              o: open,
+              h: high,
+              l: low,
+              c: close
+            });
+            
+            // Set next base value with upward trend
+            baseValue = close + Math.random() * 0.5;
+          }
+          
+          return data.reverse();
+        }
+        
+        // Function to generate volume data
+        function generateVolumeData(candleData) {
+          return candleData.map(candle => {
+            const volume = Math.floor(Math.random() * 1000000) + 500000;
+            return {
+              x: candle.x,
+              y: volume
+            };
+          });
+        }
+        
+        // Function to update the chart with a new candle
+        function updateChart() {
+          // Get current data
+          const data = stockChart.data.datasets[0].data;
+          const volumeData = stockChart.data.datasets[1].data;
+          
+          // Remove the first data point
+          if (data.length > 30) {
+            data.shift();
+            volumeData.shift();
+          }
+          
+          // Get the last candle
+          const lastCandle = data[data.length - 1];
+          const lastClose = lastCandle.c;
+          
+          // Create a new date 1 minute after the last one
+          const newDate = new Date(lastCandle.x.getTime() + 60000);
+          
+          // Generate a new candle with upward bias
+          const open = lastClose;
+          const close = open + (Math.random() * 6 - 1.5); // More likely to close higher
+          const high = Math.max(open, close) + Math.random() * 2;
+          const low = Math.min(open, close) - Math.random() * 1;
+          
+          // Add the new candle
+          data.push({
+            x: newDate,
+            o: open,
+            h: high,
+            l: low,
+            c: close
+          });
+          
+          // Add new volume data
+          const volume = Math.floor(Math.random() * 1000000) + 500000;
+          volumeData.push({
+            x: newDate,
+            y: volume
+          });
+          
+          // Update the chart
+          stockChart.update();
+          
+          // Draw price label
+          drawPriceLabel();
+        }
+        
+        // Draw initial price label
+        drawPriceLabel();
+        
+        // Update the chart every 1000ms
+        setInterval(updateChart, 1000);
+      });
+    </script>
+    
+    <div class="market-indicator">
+      <div class="indicator">
+        <span class="dot up"></span>
+        <span>NIFTY</span>
+      </div>
+      <div class="indicator">
+        <span class="dot down"></span>
+        <span>BANKNIFTY</span>
+      </div>
+    </div>
+    
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+      <ul class="flashes">
+        {% for message in messages %}
+        <li>{{ message }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    {% endwith %}
+    
+    <form method="POST" action="{{ url_for('login') }}">
+      <div class="mb-3">
+        <label for="username" class="form-label">Username or Email ID</label>
+        <input 
+          type="text"
+          class="form-control"
+          id="username"
+          name="username"
+          placeholder="Enter your username or email"
+          required
+        />
+      </div>
+      <div class="mb-4 password-field">
+        <label for="password" class="form-label">Password</label>
+        <input
+          type="password"
+          class="form-control"
+          id="password"
+          name="password"
+          placeholder="Enter your password"
+          required
+        />
+        <button type="button" class="password-toggle" onclick="togglePasswordVisibility('password')">
+          <i class="fas fa-eye"></i>
+        </button>
+      </div>
+     
+      <button type="submit" class="btn btn-trading">Sign In</button>
+    </form>
+    
+    <div class="login-footer">
+      <p>
+        Don't have an account? <a href="{{ url_for('register') }}">Register</a>
+      </p>
+      <p>
+        Forgot your password? <a href="{{ url_for('forgot_reset_password') }}">Reset Password</a>
+      </p>
+    </div>
+  </div>
+</div>
+
+<script>
+  function togglePasswordVisibility(inputId) {
+    const passwordInput = document.getElementById(inputId);
+    const toggleButton = passwordInput.nextElementSibling;
+    const icon = toggleButton.querySelector('i');
+    
+    if (passwordInput.type === 'password') {
+      passwordInput.type = 'text';
+      icon.classList.remove('fa-eye');
+      icon.classList.add('fa-eye-slash');
+    } else {
+      passwordInput.type = 'password';
+      icon.classList.remove('fa-eye-slash');
+      icon.classList.add('fa-eye');
+    }
+  }
+</script>
+
+{% endblock %}

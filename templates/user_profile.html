@@ -1,0 +1,50 @@
+{% extends 'base.html' %} {% block content %}
+    <div class="container mt-5" style="max-width: 700px;">
+      <!-- User Profile Card -->
+      <div class="card mb-4 shadow-sm border-0" style="background: linear-gradient(135deg, #f8fafc 80%, #e3f0ff 100%);">
+        <div class="card-body">
+          <div class="d-flex align-items-center mb-3">
+            <img src="/static/img/mdb-favicon.ico" alt="User" style="width:56px;height:56px;border-radius:50%;margin-right:18px;border:2px solid #007bff;background:#fff;">
+            <h2 class="card-title mb-0" style="font-size:2rem;">User Profile</h2>
+          </div>
+          <ul class="list-group list-group-flush">
+            <li class="list-group-item bg-transparent"><strong>Username:</strong> <span class="text-primary">{{ user.username }}</span></li>
+            <li class="list-group-item bg-transparent"><strong>Email:</strong> <span class="text-secondary">{{ user.email }}</span></li>
+            <li class="list-group-item bg-transparent"><strong>Mobile:</strong> <span class="text-success">{{ user.mobile }}</span></li>
+            <li class="list-group-item bg-transparent"><strong>Subscription:</strong> <span class="badge bg-info text-dark">{{ user.subtype }}</span></li>
+            <li class="list-group-item bg-transparent"><strong>Expiry Date:</strong> <span class="text-danger">{{ user.end }}</span></li>
+          </ul>
+        </div>
+      </div>
+      <!-- Trading Limits Card -->
+      <div class="card shadow-sm border-0" style="background: linear-gradient(135deg, #f0f7fa 80%, #e3f0ff 100%);">
+        <div class="card-body">
+          <h2 class="card-title mb-4" style="font-size:1.5rem;">Trading Limits</h2>
+          <form method="POST" action="{{ url_for('user_profile') }}">
+            <div class="form-group mb-3">
+              <label for="day_profit_limit"><strong>Day Profit Limit:</strong></label>
+              <div class="input-group">
+                <span class="input-group-text">₹</span>
+                <input type="number" class="form-control" id="day_profit_limit" name="day_profit_limit" value="{{ user.day_profit_limit }}" min="0" style="background:#f9fbfd;">
+              </div>
+            </div>
+            <div class="form-group mb-3">
+              <label for="day_loss_limit"><strong>Day Loss Limit:</strong></label>
+              <div class="input-group">
+                <span class="input-group-text">₹</span>
+                <input type="number" class="form-control" id="day_loss_limit" name="day_loss_limit" value="{{ user.day_loss_limit }}" min="0" style="background:#f9fbfd;">
+              </div>
+            </div>
+            <div class="form-group mb-4">
+              <label for="trade_limit"><strong>Total Trade Limit:</strong></label>
+              <div class="input-group">
+                <input type="number" class="form-control" id="trade_limit" name="trade_limit" value="{{ user.trade_limit }}" min="0" style="background:#f9fbfd;">
+                <span class="input-group-text">trades</span>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary w-100 py-2">Update Limits</button>
+          </form>
+        </div>
+      </div>
+    </div>
+{% endblock %}

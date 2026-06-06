@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SSALGO Login</title>
+    <!-- Bootstrap CSS -->
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css"
+    />
+        <style>
+
+
+
+    </style>
+  </head>
+
+  <body class="img js-fullheight" style="background-image: url(static/images/bg_1.jpg);">
+    <div class="row">
+      <div class="col" style="padding: 10px; border: 1px solid #808080; border-radius: 10px; background-color: black;">
+    <div class="container mt-5">
+      <h2>SSALGO Login</h2>
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+        <ul class=flashes>
+          {% for message in messages %}
+          <li>{{ message }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% endwith %}
+      <form method="POST" action="{{ url_for('login') }}">
+        <div class="mb-3">
+          <label for="username" class="form-label">Username</label>
+          <input 
+            type="text"
+            class="form-control"
+            id="username"
+            name="username"
+            required
+
+          />
+        </div>
+        <div class="mb-3">
+          <label for="password" class="form-label">Password</label>
+          <input
+            type="password"
+            class="form-control"
+            id="password"
+            name="password"
+            required
+
+          />
+        </div>
+        <button type="submit" class="btn btn-primary">Login</button>
+
+      </form>
+      <div class="mt-3">
+        <p>
+          Don't have an account? <a href="{{ url_for('register') }}">Register</a>
+        </p>
+        <p>
+          Forgot your password? <a href="{{ url_for('forgot_reset_password') }}">Reset Password</a>
+        </p>
+      </div>
+    </div>
+  </div>
+<div class="col" style="padding: 10px; border: 1px solid #808080; border-radius: 10px; overflow: hidden;">
+    <img src="static/images/bg_1.jpg" class="img-fluid" alt="ssalgo" style="width: 100%; height: 100%; object-fit: cover;border-radius: 10px;">
+</div>
+</div>
+    <!-- Bootstrap JS -->
+
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/js/bootstrap.bundle.min.js"></script>
+  </body>
+      <footer class="footer text-center  bg-black p-3">
+    <div class="form-group text-left mt-3">
+        <p id="message1" class="font-weight-bold text-white font-size-18 text-center" style="text-shadow: 0 0 10px rgba(0, 0, 0, 1), 0 0 20px rgba(0, 0, 0, 1), 0 0 30px rgba(0, 0, 0, 1);">సంప్రదించండి: WhatsApp - 6353854816 (మెస్సగెస్), సోమ-శుక్ర, 9am-5pm, పండుగలు మరియు మార్కెట్ సెలవుల్లో అందుబాటులో ఉండము</p>
+        <p id="message2" class="font-weight-bold text-white font-size-24 text-center" style="text-shadow: 0 0 10px rgba(0, 0, 0, 1), 0 0 20px rgba(0, 0, 0, 1), 0 0 30px rgba(0, 0, 0, 1);">संपर्क: व्हाट्सएप - 6353854816 (मैसेज), सोम-शुक्र, सुबह 9 बजे से शाम 5 बजे तक, त्योहारों और बाजार की छुट्टियों पर बंद</p>
+        <p id="message3" class="font-weight-bold text-white font-size-24 text-center" style="text-shadow: 0 0 10px rgba(0, 0, 0, 1), 0 0 20px rgba(0, 0, 0, 1), 0 0 30px rgba(0, 0, 0, 1);">Contact: WhatsApp - 6353854816 (Messages), Mon-Fri, 9am-5pm, Closed on festivals and market holidays</p>
+    </div>
+    <p id="disclaimer" class="font-weight-bold font-size-20 text-danger">Disclaimer: This services only for education purposes. We are not Responsible for your Profit and Loss. It is Completely Automated Trading System.</p>
+</footer>
+</html>

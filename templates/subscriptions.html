@@ -1,0 +1,68 @@
+{% extends 'base.html' %} {% block content %}
+<div class="container mt-4">
+  <h2>Admin Dashboard</h2>
+
+  <div class="row">
+    <div class="col mb-2">
+        
+        <h4><a href="{{ url_for('admin') }}"><span class="badge bg-secondary bg-warning">Admin</span></a></h4>
+        
+      </div></div>
+
+<div class="container mt-5">
+    <h2>Subscriptions</h2>
+
+    <table class="table mt-3">
+        <thead>
+        <tr>
+            <th>User</th>
+            <th>Start Date</th>
+            <th>End Date</th>
+            <th>Subscription Type</th>
+            <th>Action</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for subscription in subscriptions %}
+            <tr>
+                <td>{{ subscription.user }}</td>
+                <td>{{ subscription.start }}</td>
+                <td>{{ subscription.end }}</td>
+                <td>{{ subscription.subtype }}</td>
+                <td>
+                    <a href="{{ url_for('update_subscription', subscription_id=(subscription._id)) }}"
+                       class="btn btn-warning btn-sm">Edit</a>
+                    <a href="{{ url_for('delete_subscription', subscription_id=(subscription._id)) }}"
+                       class="btn btn-danger btn-sm">Delete</a>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    <form action="{{ url_for('create_subscription') }}" method="post" class="mt-3">
+        <div class="form-group">
+            <label for="user">User:</label>
+            <input type="text" name="user" class="form-control" required>
+        </div>
+        <div class="form-group">
+            <label for="start">Start Date:</label>
+            <input type="date" name="start" class="form-control" required>
+        </div>
+        <div class="form-group">
+            <label for="end">End Date:</label>
+            <input type="date" name="end" class="form-control" required>
+        </div>
+        <div class="form-group">
+            <label for="subtype">Subscription Type:</label>
+            <select class="form-control" id="subtype" name="subtype" required>
+                    <option value="free">Free</option>
+                    <option value="paid">Paid</option>
+            </select>
+        </div>
+        <button type="submit" class="btn btn-primary">Add Subscription</button>
+    </form>
+</div>
+
+</div>
+<{% endblock %}

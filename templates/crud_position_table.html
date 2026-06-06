@@ -1,0 +1,73 @@
+{% extends 'base.html' %} {% block content %}
+
+
+
+<div class="container mt-4">
+  <h2>Position Table</h2>
+
+
+  <table class="table table-bordered" style="max-height: 50px;overflow-x: auto;overflow-y: auto;">
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Symbol</th>
+        <th>IN TRADE</th>
+        <th>Trigger Type</th>
+        <th>Current Price</th>
+
+        <th>CMP</th>
+        <th>Trigger Price</th>
+        <th>Option Type</th>
+        <th>LOTS</th>
+        <th>Trail </th>
+        <th>TSL</th>
+        <th>TP1</th>
+        <th>TP2</th>
+        <th>SL</th>
+        <th>PNL</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+
+      {% for order in positions %}
+      <tr>
+        <td>{{ order["entry_id"] }}</td>
+        <td>{{ order["symbol"] }}</td>
+        <td>{{ order["decision"] }}</td>
+        <td>{{ order["track"] }}</td>
+        <td id="price_{{order['time']}}"></td>
+        <td>{{ order["comparator_type"] }}</td>
+        <td>{{ order["entry_price"] }}</td>
+        <td>{{ order["side"] }}</td>
+        <td>{{ order["lot"] }}</td>
+        <td>{{ order["trail"] }}</td>
+        <td>{{ order["tsl"] }}</td>
+        <td>{{ order["tp_1"] }}</td>
+        <td>{{ order["tp_2"] }}</td>
+        <td>{{ order["sl"] }}</td>
+        <td>{{ order["pnl"] }}</td>
+
+        <td>
+          <a
+            href="{{ url_for('edit_position_form', position_time=order['entry_id']) }}"
+            class="btn btn-primary btn-sm"
+            >Update</a
+          >
+          <a
+            href="{{ url_for('delete_position', position_time=order['entry_id']) }}"
+            class="btn btn-danger btn-sm"
+            >Exit</a
+          >
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js"></script>
+<script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+{% endblock %}

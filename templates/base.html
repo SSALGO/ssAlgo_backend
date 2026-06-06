@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <meta http-equiv="x-ua-compatible" content="ie=edge" />
+
+    <title>SSALGO - Advanced Algorithmic Trading Solutions</title>
+
+    <!-- Meta Description for SEO -->
+    <meta name="description" content="SSALGO offers cutting-edge algorithmic trading services tailored for retail and institutional investors. Automate your trading with precision strategies, real-time execution, and multi-broker integration." />
+
+    <!-- Keywords -->
+    <meta name="keywords" content="algorithmic trading, algo trading, trading bots, multi-broker trading, SSALGO, automated trading, MT5, Zerodha, Fyers, AliceBlue, AngelOne, trading strategies, quant trading, algo execution" />
+
+    <!-- Author -->
+    <meta name="author" content="SSALGO" />
+
+    <!-- Open Graph for social media -->
+    <meta property="og:title" content="SSALGO - Advanced Algorithmic Trading Solutions" />
+    <meta property="og:description" content="Automate your trades across multiple brokers with SSALGO's intelligent strategies and blazing-fast execution." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://yourdomain.com" />
+    <meta property="og:image" content="https://yourdomain.com/assets/preview-image.png" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="SSALGO - Advanced Algorithmic Trading Solutions" />
+    <meta name="twitter:description" content="Get ahead of the market with SSALGO's high-performance trading algorithms." />
+    <meta name="twitter:image" content="https://yourdomain.com/assets/preview-image.png" />
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Favicon and MDB CSS -->
+    <link rel="icon" href="https://yourdomain.com/favicon.ico" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/mdb-ui-kit/7.1.0/mdb.min.css" rel="stylesheet" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet" />
+    <style>
+      :root {
+        --primary-color: #FF8C00;
+        --primary-hover: #E67E00;
+        --secondary-color: #2C3E50;
+        --text-color: #333333;
+        --light-bg: #F8F9FA;
+        --border-color: #E0E0E0;
+      }
+      body {
+        font-family: 'Poppins', 'Roboto', Arial, sans-serif;
+        background-color: var(--light-bg);
+        min-height: 100vh;
+        margin: 0;
+        color: var(--text-color);
+      }
+      .sidebar {
+        height: 100%;
+        width: 250px;
+        position: fixed;
+        z-index: 1;
+        top: 0;
+        left: 0;
+        background: linear-gradient(135deg, var(--primary-color) 80%, var(--secondary-color) 100%);
+        overflow-x: hidden;
+        transition: 0.5s;
+        padding-top: 20px;
+        box-shadow: 3px 0 15px rgba(0,0,0,0.08);
+        border-right: 1px solid var(--border-color);
+      }
+      .sidebar .navbar-brand {
+        color: #fff !important;
+        font-weight: 700;
+        font-size: 2.1rem;
+        padding: 16px 15px 24px;
+        display: block;
+        text-align: center;
+        border-bottom: 1px solid rgba(255,255,255,0.15);
+        margin-bottom: 18px;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+      }
+      .sidebar .nav-link {
+        color: #fff !important;
+        font-weight: 600;
+        font-size: 1.08rem;
+        padding: 13px 18px;
+        margin: 6px 12px;
+        border-radius: 6px;
+        transition: all 0.18s ease;
+        display: block;
+        text-transform: uppercase;
+        letter-spacing: 0.7px;
+      }
+      .sidebar .nav-link:hover,
+      .sidebar .nav-link.active {
+        background: rgba(255,255,255,0.18);
+        color: #fff !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+      }
+      .sidebar .nav-link.active {
+        background: #800000;
+        color: #fff !important;
+      }
+      .sidebar .nav-buttons {
+        position: absolute;
+        bottom: 24px;
+        width: 100%;
+        padding: 0 14px;
+      }
+      .sidebar .nav-buttons .btn {
+        margin-bottom: 12px;
+        width: 100%;
+        font-size: 1.01rem;
+        text-transform: uppercase;
+        font-weight: 600;
+        letter-spacing: 0.6px;
+        border-radius: 5px;
+      }
+      .content-wrapper {
+        margin-left: 250px;
+        padding: 32px 18px 18px 18px;
+        transition: 0.5s;
+        min-height: 100vh;
+        background: #fff;
+        border-radius: 0 0 12px 12px;
+        box-shadow: 0 2px 16px rgba(44,62,80,0.04);
+      }
+      .sidebar-toggle {
+        position: fixed;
+        top: 18px;
+        left: 18px;
+        z-index: 999;
+        display: none;
+        background: var(--primary-color);
+        color: #fff;
+        border: none;
+        border-radius: 5px;
+        padding: 10px 14px;
+        cursor: pointer;
+        font-size: 1.2rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      }
+      @media (max-width: 991.98px) {
+        .sidebar {
+          left: -250px;
+        }
+        .sidebar.active {
+          left: 0;
+        }
+        .content-wrapper {
+          margin-left: 0;
+          padding: 18px 6px 6px 6px;
+        }
+        .content-wrapper.active {
+          margin-left: 250px;
+        }
+        .sidebar-toggle {
+          display: block;
+        }
+      }
+      .positive-pnl { color: #27ae60; }
+      .negative-pnl { color: #e74c3c; }
+      .table-responsive-sm, .table-responsive-sm table, .table-responsive-sm thead, .table-responsive-sm tr, .table-responsive-sm td, .table-responsive-sm th {
+        margin: 0 !important;
+        padding: 0 !important;
+      }
+  .table-responsive-sm,
+  .table-responsive-sm table,
+  .table-responsive-sm thead,
+  .table-responsive-sm tr,
+  .table-responsive-sm td,
+  .table-responsive-sm th {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+</style>
+
+<style>
+  .positive-pnl {
+    color: green;
+  }
+
+  .negative-pnl {
+    color: red;
+  }
+</style>
+
+
+
+  </head>
+  <body>
+    <!-- Start your project here-->
+    <!-- Sidebar Toggle Button (visible on mobile) -->
+    <button class="sidebar-toggle" id="sidebarToggle">
+      <i class="fas fa-bars"></i> Menu
+    </button>
+
+    <!-- Sidebar -->
+    <div class="sidebar" id="sidebar">
+      <a class="navbar-brand" href="{{ url_for('index') }}">SSALGO</a>
+      <ul class="navbar-nav">
+        <li class="nav-item">
+          <a class="nav-link{% if request.endpoint == 'index' %} active{% endif %}" aria-current="page" href="{{ url_for('index') }}">
+            <i class="fas fa-tachometer-alt me-2"></i> DASHBOARD
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link{% if request.endpoint == 'edit_apikey_form' %} active{% endif %}" href="{{ url_for('edit_apikey_form') }}">
+            <i class="fas fa-key me-2"></i> API
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link{% if request.endpoint == 'pricing' %} active{% endif %}" href="{{ url_for('pricing') }}">
+            <i class="fas fa-tags me-2"></i> PRICING
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link{% if request.endpoint == 'user_profile' %} active{% endif %}" href="{{ url_for('user_profile') }}">
+            <i class="fas fa-user me-2"></i> PROFILE
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link{% if request.endpoint == 'historicalbacktest' %} active{% endif %}" href="{{ url_for('historicalbacktest') }}">
+            <i class="fas fa-history me-2"></i> TRADE HISTORY
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link{% if request.endpoint == 'mainhistoricalbacktest' %} active{% endif %}" href="{{ url_for('mainhistoricalbacktest') }}">
+            <i class="fas fa-chart-line me-2"></i> MAIN TRADE HISTORY
+          </a>
+        </li>
+
+        <div class="nav-buttons">
+          
+          <a href="#" class="btn btn-success btn-sm">
+            <i class="fas fa-calendar-alt me-2"></i> EXPIRY ON {{ userexpiry }}
+          </a>
+          <a href="{{ url_for('logout') }}" class="btn btn-danger btn-sm">
+            <i class="fas fa-sign-out-alt me-2"></i> LOGOUT
+          </a>
+        </div>
+      </ul>
+      
+      
+    </div>
+
+    <!-- Content Wrapper -->
+    <div class="content-wrapper" id="content">
+      {% block content %} {% endblock %}
+    </div>
+    <!-- End your project here-->
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    // Get elements
+    const sidebarToggle = document.getElementById('sidebarToggle');
+    const sidebar = document.getElementById('sidebar');
+    const content = document.getElementById('content');
+    
+    // Toggle sidebar on button click
+    sidebarToggle.addEventListener('click', function() {
+      sidebar.classList.toggle('active');
+      content.classList.toggle('active');
+    });
+    
+    // Close sidebar when clicking outside on mobile
+    document.addEventListener('click', function(event) {
+      const isClickInsideSidebar = sidebar.contains(event.target);
+      const isClickOnToggle = sidebarToggle.contains(event.target);
+      
+      if (!isClickInsideSidebar && !isClickOnToggle && window.innerWidth < 992 && sidebar.classList.contains('active')) {
+        sidebar.classList.remove('active');
+        content.classList.remove('active');
+      }
+    });
+  });
+</script>
+<!-- MDB -->
+
+  </body>
+</html>

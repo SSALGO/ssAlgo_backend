@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <meta http-equiv="x-ua-compatible" content="ie=edge" />
+    <title>SSALGO</title>
+    
+    <!-- SEO Meta Tags -->
+    <meta name="description" content="SSALGO: Your comprehensive platform for algorithmic trading and market analysis. Explore our dashboard, API, pricing, and trade history to optimize your trading strategies." />
+    <meta name="keywords" content="algorithmic trading, market analysis, SSALGO, trading dashboard, API, trade history, trading strategies, financial markets" />
+    <meta name="author" content="SSALGO Team" />
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://www.ssalgo.com/" />
+    <meta property="og:title" content="SSALGO: Algorithmic Trading and Market Analysis" />
+    <meta property="og:description" content="Explore SSALGO for comprehensive algorithmic trading solutions. Check out our dashboard, API, pricing, and trade history to enhance your trading strategies." />
+    <meta property="og:image" content="https://www.ssalgo.com/images/og-image.jpg" />
+    
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image" />
+    <meta property="twitter:url" content="https://www.ssalgo.com/" />
+    <meta property="twitter:title" content="SSALGO: Algorithmic Trading and Market Analysis" />
+    <meta property="twitter:description" content="Discover SSALGO's advanced platform for algorithmic trading and market analysis. Visit our dashboard, API, pricing, and trade history to optimize your trading strategies." />
+    <meta property="twitter:image" content="https://www.ssalgo.com/images/twitter-image.jpg" />
+    
+    <!-- Font Awesome -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet"/>
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- MDB -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/mdb-ui-kit/7.1.0/mdb.min.css" rel="stylesheet"/>
+    
+    <style>
+      :root {
+        --primary-color: #FF8C00; /* Dark Orange */
+        --primary-hover: #E67E00;
+        --secondary-color: #2C3E50; /* Dark blue-gray */
+        --text-color: #333333;
+        --light-bg: #F8F9FA;
+        --border-color: #E0E0E0;
+      }
+      
+      body {
+        font-family: 'Poppins', sans-serif;
+        background-color: var(--light-bg);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      
+      /* Navbar styling */
+      .navbar {
+        background-color: white !important;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        padding: 0.8rem 1rem;
+      }
+      
+      .navbar-brand {
+        font-weight: 700;
+        color: var(--primary-color) !important;
+        font-size: 1.5rem;
+        letter-spacing: 0.5px;
+      }
+      
+      .nav-link {
+        color: var(--secondary-color) !important;
+        font-weight: 500;
+        padding: 0.5rem 1rem !important;
+        transition: all 0.3s ease;
+      }
+      
+      .nav-link:hover, .nav-link.active {
+        color: var(--primary-color) !important;
+      }
+      
+      /* Main content */
+      .main-content {
+        flex: 1;
+        padding: 2rem 0;
+      }
+      
+      .content-row {
+        margin: 0;
+        min-height: calc(100vh - 350px);
+      }
+      
+      .content-col {
+        padding: 1.5rem;
+      }
+      
+      .image-col {
+        padding: 1.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      
+      .image-container {
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        height: 100%;
+        width: 100%;
+      }
+      
+      .image-container img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transition: transform 0.5s ease;
+      }
+      
+      .image-container:hover img {
+        transform: scale(1.03);
+      }
+      
+      /* Footer styling */
+      .contact-footer {
+        background: linear-gradient(135deg, #2C3E50 0%, #1A252F 100%);
+        padding: 1.5rem 0;
+        color: white;
+      }
+      
+      .contact-footer p {
+        margin-bottom: 0.5rem;
+        font-size: 0.9rem;
+        text-shadow: none !important;
+      }
+      
+      .company-footer {
+        background-color: #1A252F;
+        padding: 2rem 0 1rem;
+      }
+      
+      .company-footer h3 {
+        font-size: 1.2rem;
+        font-weight: 600;
+        margin-bottom: 1rem;
+        color: var(--primary-color);
+      }
+      
+      .company-footer ul {
+        list-style: none;
+        padding-left: 0;
+      }
+      
+      .company-footer ul li {
+        margin-bottom: 0.5rem;
+      }
+      
+      .company-footer a {
+        color: #CCC;
+        text-decoration: none;
+        transition: color 0.3s ease;
+      }
+      
+      .company-footer a:hover {
+        color: var(--primary-color);
+      }
+      
+      .copyright {
+        font-size: 0.9rem;
+        color: #999;
+      }
+      
+      /* Custom table styles */
+      .table-responsive-sm,
+      .table-responsive-sm table,
+      .table-responsive-sm thead,
+      .table-responsive-sm tr,
+      .table-responsive-sm td,
+      .table-responsive-sm th {
+        margin: 0 !important;
+        padding: 0 !important;
+      }
+      
+      .positive-pnl {
+        color: #28a745;
+        font-weight: 500;
+      }
+      
+      .negative-pnl {
+        color: #dc3545;
+        font-weight: 500;
+      }
+      
+      /* Responsive adjustments */
+      @media (max-width: 992px) {
+        .content-row {
+          flex-direction: column-reverse;
+        }
+        
+        .image-col {
+          margin-bottom: 1.5rem;
+          max-height: 300px;
+        }
+      }
+      
+      @media (max-width: 768px) {
+        .navbar {
+          padding: 0.5rem;
+        }
+        
+        .content-col, .image-col {
+          padding: 1rem;
+        }
+        
+        .contact-footer p {
+          font-size: 0.8rem;
+        }
+      }
+    </style>
+  </head>
+  
+  <body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-light">
+      <div class="container">
+        <a class="navbar-brand" href="{{ url_for('index') }}">
+          <i class="fas fa-chart-line me-2"></i>SSALGO
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNavAltMarkup" aria-controls="navbarNavAltMarkup" aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNavAltMarkup">
+          <ul class="navbar-nav ms-auto">
+            <li class="nav-item">
+              <a class="nav-link" href="/aboutus">About Us</a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="/contactus">Contact Us</a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="/pricing">Pricing</a>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <div class="container">
+        <div class="row content-row">
+            {% block content %} {% endblock %}
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Contact Footer -->
+    <footer class="contact-footer">
+      <div class="container">
+        <div class="row">
+          <div class="col-md-4">
+            <p><i class="fas fa-globe me-2"></i>తెలుగు</p>
+            <p>సంప్రదించండి: WhatsApp - 6304109306</p>
+            <p>సోమ-శుక్ర, 9am-5pm</p>
+          </div>
+          <div class="col-md-4">
+            <p><i class="fas fa-globe me-2"></i>हिंदी</p>
+            <p>संपर्क: व्हाट्सएप - 6304109306 (मैसेज)</p>
+            <p>सोम-शुक्र, सुबह 9 बजे से शाम 5 बजे तक</p>
+          </div>
+          <div class="col-md-4">
+            <p><i class="fas fa-globe me-2"></i>English</p>
+            <p>Contact: WhatsApp - 6304109306 (Messages)</p>
+            <p>Mon-Fri, 9am-5pm, Closed on holidays</p>
+          </div>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Company Footer -->
+    <footer class="company-footer">
+      <div class="container">
+        <div class="row">
+          <div class="col-md-6">
+            <h3>Company</h3>
+            <ul>
+              <li><a href="/termsandconditions"><i class="fas fa-file-contract me-2"></i>Terms and Conditions</a></li>
+              <li><a href="/refundpolicy"><i class="fas fa-undo me-2"></i>Refund and Cancellation Policy</a></li>
+              <li><a href="/privacypolicy"><i class="fas fa-shield-alt me-2"></i>Privacy Policy</a></li>
+            </ul>
+          </div>
+          <div class="col-md-6 mt-4 mt-md-0">
+            <h3>Trading Resources</h3>
+            <ul>
+              <li><a href="#"><i class="fas fa-book me-2"></i>Trading Guides</a></li>
+              <li><a href="#"><i class="fas fa-question-circle me-2"></i>FAQ</a></li>
+              <li><a href="#"><i class="fas fa-headset me-2"></i>Support</a></li>
+            </ul>
+          </div>
+        </div>
+        <div class="row mt-4">
+          <div class="col text-center">
+            <p class="copyright">&copy; 2024 SSALGO. All rights reserved.</p>
+          </div>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mdb-ui-kit/7.1.0/mdb.umd.min.js"></script>
+  </body>
+</html>

@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="stylesheet"
+      href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css"
+    />
+    <title>{% if order %}Edit Order{% else %}Add Order{% endif %}</title>
+  </head>
+
+  <style>
+    /* Initially hide the hidden input */
+    #trailHidden {
+        display: none;
+    }
+
+    /* Show the hidden input when the checkbox is checked */
+    #trailCheckbox:checked + #trailHidden {
+        display: block;
+    }
+</style>
+
+  <body>
+    <div class="container mt-4" >
+      <h2>{% if order %}Edit Order{% else %}Add Order{% endif %}</h2>
+      <form method="post" action="{{ action_url }}">
+        <div class="row">
+          
+        {% if order %}
+        <div class="col">
+        <div class="md-form">
+          <label for="_id" class="form-control-sm">ID</label>
+          <input
+            type="text"
+            class="form-control form-control-sm"
+            id="_id"
+            name="_id"
+            value="{% if order %}{{ order['_id'] }}{% endif %}"
+            {%
+            if
+            order
+            %}readonly{%
+            endif
+            %}
+          />
+        </div> </div> 
+        
+        <div class="col">
+        <div class="md-form">
+          <label for="time" class="form-control-sm">Time</label>
+          <input
+            type="text"
+            class="form-control form-control-sm"
+            id="time"
+            name="time"
+            value="{% if order %}{{ order['time'] }}{% endif %}"
+            {%
+            if
+            order
+            %}readonly{%
+            endif
+            %}
+          />
+        </div></div> {% endif %} 
+      
+        
+        <div class="col">
+        <div class="md-form" >
+          <label for="symbol" class="form-control-sm">Symbol</label>
+          {%
+            if
+            order
+            %}
+            {% if order['status']=='paused' %}
+          <input
+            type="text"
+            class="form-control form-control-sm"
+            id="symbol"
+            name="symbol"
+            value="{% if order %}{{ order['symbol'] }}{% endif %}"
+            {%
+                if
+                order
+                %}readonly{%
+                endif
+                %}
+            
+          />
+          {% endif %}
+          {% else %}
+          <select class="form-control form-control-sm" id="symbol" name="symbol" >
+
+            <option value="BANKNIFTY" {%
+              if
+              order
+              %} {% if order['symbol'] == "BANKNIFTY" %} selected {% endif %} {%
+                endif
+                %} >BANKNIFTY</option>
+            <option value="NIFTY" {%
+              if
+              order
+              %}  {% if order['symbol'] == 'NIFTY' %} selected {% endif %} {%
+              endif
+              %}>NIFTY</option>
+            <option value="FINNIFTY" {%
+              if
+              order
+              %}  {% if order['symbol'] == 'FINNIFTY' %} selected {% endif %} {%
+              endif
+              %}>FINNIFTY</option>
+            <option value="CRUDEOIL" {%
+              if
+              order
+              %}  {% if order['symbol'] == 'CRUDEOIL' %} selected {% endif %} {%
+              endif
+              %}>CRUDEOIL</option>
+        </select>
+{% endif %}
+        </div> </div> 
+
+
+        <div class="col">
+        <div class="md-form ">
+          <label for="trigger_price" 
+          class="form-control-sm">Trigger Price</label>
+          <input
+          required
+            class="form-control form-control-sm"
+            id="trigger_price"
+            name="trigger_price"
+            required="True"
+                  type="number"
+                  step="0.01"
+            value="{% if order %}{{ order['trigger_price'] }}{% endif %}"
+          />
+        </div> </div> 
+        <div class="md-form">
+      <label for="comparator_type" class="form-control-sm">Comparator</label>
+      <select name="comparator_type" required="True" id="comparator_type" class="form-control form-control-sm">
+        <option value=">="  {% if order %} {% if order["comparator_type"] == ">=" %} selected {% endif %} {% endif %} > >=</option>
+        <option value="<="  {% if order %} {% if order["comparator_type"] == "<=" %} selected {% endif %} {% endif %} > <= </option>
+      </select>
+    </div>
+
+        <div class="col">
+
+        <div class="md-form">
+          <label for="trigger_type" class="form-control-sm">Trigger Type</label>
+
+          <select class="form-control form-control-sm" id="trigger_type" name="trigger_type">
+            <option value="On Spot" {%
+              if
+              order
+              %} {% if order['trigger_type'] == "On Spot" %} selected {% endif %} {% endif %}>On Spot</option>
+            <option value="On Premium" {%
+              if
+              order
+              %} {% if order['trigger_type'] == "On Premium" %} selected {% endif %}{% endif %}>On Premium</option>
+            <option value="On Future" {%
+              if
+              order
+              %} {% if order['trigger_type'] == "On Future" %} selected {% endif %} {% endif %}>On Future</option>
+        </select>
+        </div> 
+
+
+      </div> 
+        
+        
+        </div>
+      
+      <div class="row">
+      <div class="col">
+        <div class="md-form">
+          <label for="option_type" class="form-control-sm">Option Type</label>
+
+        <select name="option_type" required="True" id="option_type" class="form-control form-control-sm">
+          <option value="CE" {% if order %} {% if order['option_type'] == "CE" %} selected {% endif %}{% endif %}>CE</option>
+          <option value="PE" {% if order %} {% if order['option_type'] == "PE" %} selected {% endif %}{% endif %} >PE</option>
+          <option value="FUT" {% if order %} {% if order['option_type'] == "FUT" %} selected {% endif %}{% endif %}>FUT</option>
+        </select>
+
+        </div>  </div> 
+        
+      <div class="col">
+        <div class="md-form ">
+      <label for="strike" class="form-control-sm">Strike</label>
+      <select name="strike" required="True" id="strike" class="form-control form-control-sm">
+        <option value="0" {%if order%} {% if order['strike'] == 0 %} selected {% endif %} {% endif %}>ATM</option>
+        <option value="1" {%if order%} {% if order['strike'] == 1 %} selected {% endif %} {% endif %} >OTM+1</option>
+        <option value="-1" {%if order%} {% if order['strike'] == -1 %} selected {% endif %} {% endif %}>ITM+1</option>
+        <option value="2" {%if order%} {% if order['strike'] == 2 %} selected {% endif %} {% endif %}>OTM+2</option>
+        <option value="-2" {%if order%} {% if order['strike'] == -2 %} selected {% endif %} {% endif %}>ITM+2</option>
+        <option value="3" {%if order%} {% if order['strike'] == 3 %} selected {% endif %} {% endif %}>OTM+3</option>
+        <option value="-3" {%if order%} {% if order['strike'] == -3 %} selected {% endif %} {% endif %}>ITM+3</option>
+        <option value="4" {%if order%} {% if order['strike'] == 4 %} selected {% endif %} {% endif %}>OTM+4</option>
+        <option value="-4" {%if order%} {% if order['strike'] == -4 %} selected {% endif %} {% endif %}>ITM+4</option>
+        <option value="5" {%if order%} {% if order['strike'] == 5 %} selected {% endif %} {% endif %}>OTM+5</option>
+        <option value="-5" {%if order%} {% if order['strike'] == -5 %} selected {% endif %} {% endif %}>ITM+5</option>
+      </select>
+    </div>
+      </div>
+      {% if order %}
+      <div class="col">
+            <div class="md-form">
+      <label for="lot" class="form-control-sm">Lot</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="lot"
+            name="lot"
+            required="True"
+                  type="number"
+                  min="2"
+            value="{{ order['lot'] }}"
+          />
+    </div></div>
+      {% else %}
+      <div class="col">
+            <div class="md-form">
+      <label for="lot" class="form-control-sm">Lot</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="lot"
+            name="lot"
+            required="True"
+                  type="number"
+            value="2"
+            min="2"
+
+          />
+    </div>
+      </div>
+  {% endif %}
+
+  <div class="col">
+              <div class="md-form">
+                <label class="form-control-sm" for="trailCheckbox">Trail</label>
+        <br />
+
+
+        <input type="checkbox" class="form-control-sm" name="trail" id="trailCheckbox" value="1" {% if order and order['trail']==1 %} checked {% endif %} />
+        <input type="hidden" class="form-control-sm" name="trail" id="trailHidden" value="0" />
+            
+          </div>
+            </div>
+      
+            <div class="col"><div class="md-form">
+            <label for="trail_stoploss" class="form-control-sm">TSL</label>
+                  <input
+                  required="True"
+              type="number"
+              name="trail_stoploss"
+              id="trail_stoploss"
+              value="{% if order and order['trail_stoploss'] %}{{ order['trail_stoploss'] }}{% else %}50{% endif %}"
+              class="form-control form-control-sm"
+            />
+      
+          </div>
+            
+          </div>
+      
+          <div class="col">
+            
+              <div class="md-form">
+            <label for="tp_1" class="form-control-sm">TP 1</label>
+      
+            <input type="number" name="tp_1" required="True"  id="tp_1" value="{% if order and order['tp_1'] %}{{ order['tp_1'] }}{% else %}100{% endif %}" class="form-control form-control-sm" />
+          </div>
+      
+      
+            </div>
+      
+            <div class="col">
+              <div class="md-form">
+            <label for="tp_2" class="form-control-sm">TP 2</label>
+      
+            <input type="number" name="tp_2" required="True" value="{% if order and order['tp_2'] %}{{ order['tp_2'] }}{% else %}150{% endif %}" id="tp_2" class="form-control form-control-sm" />
+          </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+            <label for="sl" class="form-control-sm">SL</label>
+      
+            <input type="number" name="sl" id="sl" value="{% if order and order['sl'] %}{{ order['sl'] }}{% else %}50{% endif %}" required class="form-control form-control-sm" />
+            <input type="hidden" name="status" value="opened">
+          </div>
+        </div>
+            
+
+
+
+
+      <div class="col">
+        <div class="md-form">
+          <label  class="form-control-sm">Submit</label>
+          <button type="submit" class="btn btn-primary btn-sm">
+            {% if order %}Save{% else %}Add Order{% endif %}
+          </button>
+        </div>
+      </div>
+
+      </div>
+
+
+
+
+
+
+
+
+
+
+
+        
+      
+      
+      
+      
+            
+        
+
+
+      </form>
+    </div>
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js"></script>
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+  </body>
+</html>

@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="stylesheet"
+      href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css"
+    />
+    
+    <title>Add Order</title>
+ <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+        }
+        th {
+            background-color: #f2f2f2;
+            text-align: center;
+        }
+        td select {
+            width: 100%;
+        }
+    </style>
+    <script type="09bdecaf2d557f0c9e6f5d25-text/javascript">
+        function addRow() {
+            const table = document.getElementById("optionsTable").getElementsByTagName("tbody")[0];
+            const row = table.insertRow();
+            row.innerHTML = `
+                <td>
+                    <select name="ooption" required class="form-control form-control-sm">
+                        <option value="CE">CE</option>
+                        <option value="PE">PE</option>
+                        <option value="FUT">FUT</option>
+                    </select>
+                </td>
+                <td>
+                    <input
+                            required
+                              class="form-control form-control-sm"
+                              id="ostrike"
+                              name="ostrike"
+                              required="True"
+                                    type="number"
+                                    min="-50"
+                                    max="50"
+                              value="1"
+                            />
+                </td>
+                <td>
+                    <select name="oside" required class="form-control form-control-sm">
+                        <option value="BUY">BUY</option>
+                        <option value="SELL">SELL</option>
+                    </select>
+                </td>
+                <td>
+                    <select name="oexpiry" required class="form-control form-control-sm">
+                        <option value="Current Week">Current Week</option>
+                        <option value="Next Week">Next Week</option>
+                        <option value="Current Month">Current Month</option>
+                        <option value="Next Month">Next Month</option>
+                    </select>
+                </td>
+
+                    <td>
+                        <input
+                            required
+                              class="form-control form-control-sm"
+                              id="olot"
+                              name="olot"
+                              required="True"
+                                    type="number"
+                                    min="1"
+                              value="1"
+                            />
+                    </td>
+                <td>
+                    <button type="button" onclick="deleteRow(this)">Delete</button>
+                </td>
+            `;
+        }
+
+        function deleteRow(button) {
+            const row = button.parentNode.parentNode;
+            row.parentNode.removeChild(row);
+        }
+    </script>
+        <script type="09bdecaf2d557f0c9e6f5d25-text/javascript">
+
+        function fetchPrice() {
+            const symbol = document.getElementById("symbol").value;
+            fetch("/prices")
+                .then(response => response.json())
+                .then(data => {
+                    const price = data[symbol];
+                    if (price !== undefined) {
+                        //document.getElementById("trigger_price").value = price;
+                        console.log("Price fetched successfully:", price);
+                    } else {
+                        alert("Price not found for selected symbol.");
+                    }
+                })
+                .catch(error => console.error("Error fetching prices:", error));
+
+            const symbolSelect = document.getElementById("symbol");
+            const selectedValue = symbolSelect.value;
+            const dynamicSymbols = ["SILVERM", "CRUDEOIL", "CRUDEOILM", "NATURALGAS", "ZINC", "COPPER", "MCXMETLDEX", "NATGASMINI", "GOLDM", "SILVER", "MCXBULLDEX", "GOLD", "STEELREBAR", "LEADMINI", "ZINCMINI", "LEAD", "ALUMINIUM", "MENTHAOIL", "ALUMINI", "NICKEL", "KAPAS", "SILVERMIC", "GOLDPETAL", "GOLDGUINEA", "GOLDTEN", "COTTONOIL", "COTTONCNDY"];
+            
+            const startTimeInput = document.getElementById("StartTime");
+            const exitTimeInput = document.getElementById("ExitTime");
+            const afterentrytime=document.getElementById("afterentrytime");
+            const exitatTime=document.getElementById("ExitatTime");
+            // Update StartTime and ExitTime if selected symbol is in dynamicSymbols
+            if (dynamicSymbols.includes(selectedValue)) {
+                startTimeInput.value = "09:05";
+                exitTimeInput.value = "23:40";
+                afterentrytime.value="09:05";
+                exitatTime.value="23:40";
+            }
+            else {
+                // Update StartTime and ExitTime for static options
+                startTimeInput.value = "09:17";
+                exitTimeInput.value = "15:20";
+                afterentrytime.value="09:17";
+                exitatTime.value="15:20";
+            }
+        }
+        
+    </script>
+  </head>
+ 
+
+  <style>
+    .hidden {
+            display: none;
+        }
+    /* Initially hide the hidden input */
+    #trailHidden {
+        display: none;
+    }
+
+    /* Show the hidden input when the checkbox is checked */
+    #trailCheckbox:checked + #trailHidden {
+        display: block;
+    }
+</style>
+
+  <body>
+    <div class="container mt-4" >
+      <h2>Add Order</h2>
+      <form  method="post" action="/add_fractalnubiatimehedge_order">
+        <div class="row">
+          <div class="col">
+        <div class="md-form">
+          <label for="botname" class="form-control-sm">Bot Name</label>
+          <input
+            type="text"
+            class="form-control form-control-sm"
+            id="botname"
+            name="botname"
+            value="Bot"
+            required 
+            
+          />
+        </div></div>
+
+
+        </div>
+        <div class="row">
+          
+         
+      
+        <div class="col">
+    <div class="md-form">
+        <label for="symbol" class="form-control-sm">Symbol</label>
+        
+            <select class="form-control form-control-sm" id="symbol" name="symbol" onchange="if (!window.__cfRLUnblockHandlers) return false; fetchPrice()" data-cf-modified-09bdecaf2d557f0c9e6f5d25-="">
+                <option value="NIFTY">NIFTY</option>
+                <option value="BANKNIFTY">BANKNIFTY</option>
+                <option value="SENSEX">SENSEX</option>
+                
+                <option value="FINNIFTY">FINNIFTY</option>
+                
+                    <option value=SILVERM>SILVERM</option>
+                
+                    <option value=CRUDEOIL>CRUDEOIL</option>
+                
+                    <option value=CRUDEOILM>CRUDEOILM</option>
+                
+                    <option value=NATURALGAS>NATURALGAS</option>
+                
+                    <option value=ZINC>ZINC</option>
+                
+                    <option value=COPPER>COPPER</option>
+                
+                    <option value=MCXMETLDEX>MCXMETLDEX</option>
+                
+                    <option value=NATGASMINI>NATGASMINI</option>
+                
+                    <option value=GOLDM>GOLDM</option>
+                
+                    <option value=SILVER>SILVER</option>
+                
+                    <option value=MCXBULLDEX>MCXBULLDEX</option>
+                
+                    <option value=GOLD>GOLD</option>
+                
+                    <option value=STEELREBAR>STEELREBAR</option>
+                
+                    <option value=LEADMINI>LEADMINI</option>
+                
+                    <option value=ZINCMINI>ZINCMINI</option>
+                
+                    <option value=LEAD>LEAD</option>
+                
+                    <option value=ALUMINIUM>ALUMINIUM</option>
+                
+                    <option value=MENTHAOIL>MENTHAOIL</option>
+                
+                    <option value=ALUMINI>ALUMINI</option>
+                
+                    <option value=NICKEL>NICKEL</option>
+                
+                    <option value=KAPAS>KAPAS</option>
+                
+                    <option value=SILVERMIC>SILVERMIC</option>
+                
+                    <option value=GOLDPETAL>GOLDPETAL</option>
+                
+                    <option value=GOLDGUINEA>GOLDGUINEA</option>
+                
+                    <option value=GOLDTEN>GOLDTEN</option>
+                
+                    <option value=COTTONOIL>COTTONOIL</option>
+                
+                    <option value=COTTONCNDY>COTTONCNDY</option>
+                
+            </select>
+        
+    </div>
+    <input type="hidden" class="form-control-sm" name="direction_type" id="direction_type" value="Up Side" />
+    
+    <input type="hidden" class="form-control-sm" name="method" id="method" value="None" />
+    
+    <input type="hidden" class="form-control-sm" name="timeframe" id="timeframe" value="1m" />
+    
+    
+    <input type="hidden" class="form-control-sm" name="comparator_type" id="comparator_type" value=">=" />
+    
+
+    
+    <input type="hidden" class="form-control-sm" name="trigger_price" id="trigger_price" value="1" />
+</div>
+<!--
+        <div class="col">
+        <div class="md-form">
+          <label for="direction_type" class="form-control-sm">Direction </label>
+          <select name="direction_type" required="True" id="direction_type" class="form-control form-control-sm">
+            <option value="Up Side"   > Up Side</option>
+            <option value="Dn Side"   > Dn Side </option>
+          </select>
+        </div></div>
+
+        <div class="col">
+        <div class="md-form">
+          <label for="method" class="form-control-sm">Method</label>
+          <select name="method" required="True" id="method" class="form-control form-control-sm">
+            <option value="None"   >None </option>
+            <option value="Fractal"   >Fractal</option>
+            <option value="WMA"   >WMA (5m,15m,75m)</option>
+
+            <option value="Alpha"   >Alpha Trend</option>
+            <option value="Fractal & Nubia"   >Fractal & Nubia</option>
+            <option value="Fractal & Alpha"   >Fractal & Alpha</option>
+            <option value="Fractal & Nubia & Laggingspan"   >Fractal & Nubia & Laggingspan</option>
+
+            <option value="Fractal & Nubia & (Laggingspan & Cvd)"   >Fractal & Nubia & (Laggingspan & Cvd)</option>
+            <option value="Fractal & Nubia & (Laggingspan | Cvd)"   >Fractal & Nubia & (Laggingspan | Cvd)</option>
+            
+          </select>
+        </div></div>
+        <div class="col">
+
+        <div class="md-form">
+          <label for="timeframe" class="form-control-sm">TimeFrame</label>
+
+          <select class="form-control form-control-sm" id="timeframe" name="timeframe">
+            <option value="1m" >1m</option>
+            <option value="2m" >2m</option>
+            <option value="3m" >3m</option>
+            <option value="5m" >5m</option>
+            <option value="10m" >10m</option>
+            <option value="15m" >15m</option>
+            <option value="30m" >30m</option>
+            <option value="1h" >1h</option>
+            <option value="2h" >2h</option>
+            
+        </select>
+        </div> </div>
+
+
+      
+        <div class="col">
+          <div class="md-form">
+      <label for="comparator_type" class="form-control-sm">Comparator</label>
+      <select name="comparator_type" required="True" id="comparator_type" class="form-control form-control-sm">
+        <option value=">="   > if CP Price More Than</option>
+        <option value="<="   > if CP Price Less Than</option>
+      </select>
+    </div>
+        </div>
+        <div class="col">
+        <div class="md-form ">
+          <label for="trigger_price" 
+          class="form-control-sm">Trigger Price</label>
+          <input
+          required
+            class="form-control form-control-sm"
+            id="trigger_price"
+            name="trigger_price"
+
+                  type="number"
+                  step="0.01"
+            value="0"
+          />
+        </div> </div>
+
+-->
+
+        <div class="col">
+
+        <div class="md-form">
+          <label for="trigger_type" class="form-control-sm">Trigger Type</label>
+
+          <select class="form-control form-control-sm" id="trigger_type" name="trigger_type">
+            <option value="On Spot" >On Spot</option>
+            
+            <option value="On Future" >On Future</option>
+        </select>
+        </div> 
+
+
+      </div> 
+        
+        
+        </div>
+      
+      <div class="row">
+
+        <div class="col">
+
+        <div class="md-form">
+          <label for="usetype" class="form-control-sm">Run Type</label>
+
+          <select class="form-control form-control-sm" id="usetype" name="usetype">
+            <option value="true" >Continuous</option>
+            <option value="false" >Single Time</option>
+            
+        </select>
+        </div> 
+
+
+      </div> 
+        
+        <div class="col">
+          <div class="md-form">
+        <label for="afterentrytime" class="form-control-sm">After Entry Time</label>
+        <input
+        required
+          class="form-control form-control-sm"
+          id="afterentrytime"
+          name="afterentrytime"
+          required="True"
+                type="time" value="09:15"  
+        />
+        </div></div>
+
+        <div class="col">
+          <div class="md-form">
+        <label for="ExitatTime" class="form-control-sm">Exit at Time</label>
+        <input
+        required
+          class="form-control form-control-sm"
+          id="ExitatTime"
+          name="ExitatTime"
+          required="True"
+                type="time" value="15:25"  
+        />
+
+        </div></div>
+        
+
+          <div class="col">
+              <div class="md-form">
+                <label class="form-control-sm" name="trail" for="trail">Trail</label>
+                <select name="trail" required="True" id="trail" class="form-control form-control-sm">
+                    <option value="1"   > Trail</option>
+                    <option value="0"   > No Trail</option>
+                </select>
+          </div>
+            </div>
+      
+            <div class="col"><div class="md-form">
+            <label for="trail_stoploss" class="form-control-sm">TSL</label>
+                  <input
+                  required="True"
+              type="number"
+              name="trail_stoploss"
+              id="trail_stoploss"
+              value="1000"
+              class="form-control form-control-sm"
+            />
+      
+          </div>
+            
+          </div>
+          </div>
+            <div class="row">
+
+              <div class="col">
+    <div class="md-form">
+      <label for="Intraday" class="form-control-sm">Intraday</label>
+      <select name="Intraday" required="True" id="Intraday" class="form-control form-control-sm">
+
+        <option value="false"   > Positional</option>
+        <option value="true"   > Intraday</option>
+        
+      </select>
+    </div></div>
+
+            <div class="col">
+              <div class="md-form">
+                  <label class="form-control-sm" for="trailCheckboxfibo">TP Fibolevel</label>
+                  <br />
+                  <input type="hidden" class="form-control-sm" name="tpprice" id="trailHidden" value="0" />
+                  <input type="checkbox" class="form-control-sm" name="tpfibo" id="trailCheckboxfibo" value="1"  />
+                <input type="hidden" class="form-control-sm" name="tpfibo" id="trailHidden" value="0" />
+                         <input type="hidden" class="form-control-sm" name="slprice" id="trailHidden" value="0" />
+            
+            
+              </div>
+          </div>
+
+
+
+
+            <div class="col">
+              <div class="md-form">
+                <label class="form-control-sm" for="trailCheckbox">SL Signal</label>
+                <br />
+                <input type="checkbox" class="form-control-sm" name="slsignal" id="trailCheckbox" value="1"  checked  />
+                <input type="hidden" class="form-control-sm" name="slsignal" id="trailHidden" value="0" />
+                <input type="hidden" class="form-control-sm" name="slfibo" id="trailHidden" value="0" />
+            
+              </div>
+            </div>
+            <!--
+            <div class="col">
+              <div class="md-form">
+                <label class="form-control-sm" for="trailCheckbox">SL Fibolevel</label>
+                <br />
+            
+                <input type="checkbox" class="form-control-sm" name="slfibo" id="trailCheckboxslfibo" value="1"   />
+                <input type="hidden" class="form-control-sm" name="slfibo" id="trailHidden" value="0" />
+            
+            
+              </div>
+            </div>
+                -->
+          </div>
+
+
+
+          <div class="row">
+                    <div class="col">
+
+        <div class="md-form">
+          <label for="tptrigger_type" class="form-control-sm">TP Trigger Type</label>
+
+          <select class="form-control form-control-sm" id="tptrigger_type" name="tptrigger_type">
+            <option value="On Spot" >On Spot</option>
+
+            <option value="On Future" >On Future</option>
+        </select>
+        </div> </div>
+                <div class="col">
+
+        <div class="md-form">
+          <label for="sltrigger_type" class="form-control-sm">SL Trigger Type</label>
+
+          <select class="form-control form-control-sm" id="sltrigger_type" name="sltrigger_type">
+            <option value="On Spot" >On Spot</option>
+
+            <option value="On Future" >On Future</option>
+        </select>
+        <input type="hidden" name="tp_1qty" required="True"  min="0" step="25" max="100" id="tp_1" value="50" class="form-control form-control-sm" />
+            <input type="hidden" name="tp_2qty" required="True" min="0" step="25" max="100" readonly  value="100" id="tp_2qty" class="form-control form-control-sm" />
+        </div> </div>
+
+<div class="col">
+            
+              <div class="md-form">
+            <label for="pnl" class="form-control-sm">Profit Exit</label>
+      
+            <input type="number" name="pnl" required="True"  id="pnl" value="24999" class="form-control form-control-sm" />
+          </div>
+            </div>
+            
+          <div class="col" >
+            
+            <div class="md-form">
+          <label for="tp_1" class="form-control-sm">Up Side Adjust</label>
+    
+          <input type="number" name="tp_1" required="True"  id="tp_1" max="1000000000" value="250" class="form-control form-control-sm" />
+
+          <input type="hidden" name="tp_2" required="True"  max="1000000000"  value="100" id="tp_2" class="form-control form-control-sm" />
+        </div>
+    
+    
+          </div>
+    
+
+            <div class="col" id="slprice">
+              <div class="md-form">
+            <label for="sl" class="form-control-sm">Down Side Adjust</label>
+      
+            <input type="number" name="sl" id="sl" value="250" required class="form-control form-control-sm" />
+          </div>
+        </div>
+        <div class="col" id="tpfibo" style="display: none;">
+          <div class="md-form">
+              <label for="tp1type" class="form-control-sm">TP1 Type</label>
+              <select name="tp1type" required="True" id="tp1type" class="form-control form-control-sm">
+                
+                <option value="W B0.382" >W B0.382</option>
+                <option value="W B0.618" >W B0.618</option>
+                <option value="W B1" >W B1</option>
+                <hr>
+                <option value="W S0.382" >W S0.382</option>
+                <option value="W S0.618" >W S0.618</option>
+                <option value="W S1" >W S1</option>
+
+
+              </select>
+              <input type="hidden" name="tp2type" required="True"  max="1000000000"  value="100" id="tp2type" class="form-control form-control-sm" />
+              sltype
+              <input type="hidden" name="sltype" required="True"  max="1000000000"  value="100" id="slType" class="form-control form-control-sm" />
+              
+            </div>
+        </div>
+
+        <!--
+        <div class="col" id="slfibo">
+          <div class="md-form">
+              <label for="sltype" class="form-control-sm">SL Type</label>
+              <select name="sltype" required="True" id="sltype" class="form-control form-control-sm">
+                
+
+                <option value="W S0.382" >W S0.382</option>
+                <option value="W S0.618" >W S0.618</option>
+                <option value="W S1" >W S1</option>
+                <hr>
+                <option value="W B0.382" >W B0.382</option>
+                <option value="W B0.618" >W B0.618</option>
+                <option value="W B1" >W B1</option>
+                <hr>
+              </select>
+          </div>
+        </div>-->
+</div>
+<div class="row">
+        
+<div class="col">
+  <div class="md-form">
+<label for="DaysHead" class="form-control-sm">DaysHead</label>
+<input
+required
+  class="form-control form-control-sm"
+  id="DaysHead"
+  name="DaysHead"
+  required="True"
+        type="number"
+        min="0"
+  value="0"
+/>
+</div></div>
+
+<div class="col">
+  <div class="md-form">
+<label for="RolloverTime" class="form-control-sm">RolloverTime</label>
+<input
+required
+  class="form-control form-control-sm"
+  id="RolloverTime"
+  name="RolloverTime"
+  required="True"
+        type="time" value="14:30"  
+/>
+</div></div>
+<div class="col">
+  <div class="md-form">
+<label for="StartTime" class="form-control-sm">StartTime</label>
+<input
+required
+  class="form-control form-control-sm"
+  id="StartTime"
+  name="StartTime"
+  required="True"
+        type="time" value="09:15"  
+/>
+</div></div>
+
+<div class="col">
+  <div class="md-form">
+<label for="ExitTime" class="form-control-sm">ExitTime</label>
+<input
+required
+  class="form-control form-control-sm"
+  id="ExitTime"
+  name="ExitTime"
+  required="True"
+        type="time" value="15:25"  
+/>
+
+</div></div>
+
+
+<div class="col">
+    <div class="md-form">
+      <label for="live" class="form-control-sm">Trade Type</label>
+      <select name="live" required="True" id="live" class="form-control form-control-sm">
+        <option value="true"   > Live</option>
+        <option value="false"   > Paper</option>
+      </select>
+    </div></div>
+
+
+<div class="col">
+    <div class="md-form">
+      <label for="status" class="form-control-sm">Status</label>
+      <select name="status" required="True" id="status" class="form-control form-control-sm">
+        <option value="paused"   > Stop</option>
+
+        <option value="opened"   > Start</option>
+        
+        
+      </select>
+
+            <input type="hidden" name="botcode" id="botcode" value="" required class="form-control form-control-sm" />
+    </div></div>
+
+
+      <div class="col">
+        <div class="md-form">
+          <label  class="form-control-sm">Submit</label>
+          <br>
+          <button type="submit" class="btn btn-primary btn-sm">
+            Add Order
+          </button>
+        </div>
+      </div>
+
+
+
+
+
+      </div>
+        <table id="optionsTable">
+            <thead>
+                <tr>
+                    <th>Option</th>
+                    <th>Strike</th>
+                    <th>Side</th>
+                    <th>Expiry</th>
+                    <th>Lots</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Initial row -->
+                
+                <tr>
+                    <td>
+                        <select name="ooption" required class="form-control form-control-sm">
+                            <option value="CE">CE</option>
+                            <option value="PE">PE</option>
+                            <option value="FUT">FUT</option>
+                        </select>
+                    </td>
+                    <td>
+                        <input
+                            required
+                              class="form-control form-control-sm"
+                              id="ostrike"
+                              name="ostrike"
+                              required="True"
+                                    type="number"
+                                    min="-50"
+                                    max="50"
+                              value="1"
+                            />
+                    </td>
+                    <td>
+                        <select name="oside" required class="form-control form-control-sm">
+                            <option value="BUY">BUY</option>
+                            <option value="SELL">SELL</option>
+                        </select>
+                    </td>
+                    <td>
+                        <select name="oexpiry" required class="form-control form-control-sm">
+                            <option value="Current Week">Current Week</option>
+                            <option value="Next Week">Next Week</option>
+                            <option value="Current Month">Current Month</option>
+                            <option value="Next Month">Next Month</option>
+                        </select>
+                    </td>
+
+                    <td>
+                        <input
+                            required
+                              class="form-control form-control-sm"
+                              id="olot"
+                              name="olot"
+                              required="True"
+                                    type="number"
+                                    min="1"
+                              value="1"
+                            />
+                    </td>
+                    <td>
+                        <button type="button" onclick="if (!window.__cfRLUnblockHandlers) return false; deleteRow(this)" data-cf-modified-09bdecaf2d557f0c9e6f5d25-="">Delete</button>
+                    </td>
+                </tr>
+
+                
+            </tbody>
+        </table>
+        <button type="button" onclick="if (!window.__cfRLUnblockHandlers) return false; addRow()" data-cf-modified-09bdecaf2d557f0c9e6f5d25-="">Add Row</button>
+      </form>
+    </div>
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js" type="09bdecaf2d557f0c9e6f5d25-text/javascript"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js" type="09bdecaf2d557f0c9e6f5d25-text/javascript"></script>
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js" type="09bdecaf2d557f0c9e6f5d25-text/javascript"></script>
+
+
+<script type="09bdecaf2d557f0c9e6f5d25-text/javascript">
+
+    document.addEventListener('DOMContentLoaded', function() {
+        var trailCheckbox = document.getElementById('trailCheckboxfibo');
+        var tpfibo = document.getElementById('tpfibo');
+        var tpfibo2 = document.getElementById('tpfibo2');
+        
+        function toggleVisibility() {
+            if (trailCheckbox.checked) {
+                tpfibo.style.display = 'block';
+                tpfibo2.style.display = 'block';
+            } else {
+                tpfibo.style.display = 'none';
+                tpfibo2.style.display = 'none';
+            }
+        }
+
+        // Check initial state on page load
+        toggleVisibility();
+
+        // Add event listener for changes
+        trailCheckbox.addEventListener('change', toggleVisibility);
+    });
+
+    document.addEventListener('DOMContentLoaded', function() {
+        var trailCheckbox = document.getElementById('trailCheckboxprice');
+        var tpfibo = document.getElementById('tpprice');
+        var tpfibo2 = document.getElementById('tpprice2');
+        
+        function toggleVisibilityprice() {
+            if (trailCheckbox.checked) {
+                tpfibo.style.display = 'block';
+                tpfibo2.style.display = 'block';
+            } else {
+                tpfibo.style.display = 'none';
+                tpfibo2.style.display = 'none';
+            }
+        }
+
+        // Check initial state on page load
+        toggleVisibilityprice();
+
+        // Add event listener for changes
+        trailCheckbox.addEventListener('change', toggleVisibilityprice);
+    });
+
+
+    document.addEventListener('DOMContentLoaded', function() {
+        var trailCheckbox = document.getElementById('trailCheckboxslfibo');
+        var tpfibo = document.getElementById('slfibo');
+        
+        function toggleVisibilityprice() {
+            if (trailCheckbox.checked) {
+                tpfibo.style.display = 'block';
+            } else {
+                tpfibo.style.display = 'none';
+            }
+        }
+
+        // Check initial state on page load
+        toggleVisibilityprice();
+
+        // Add event listener for changes
+        trailCheckbox.addEventListener('change', toggleVisibilityprice);
+    });
+
+
+function handleTPTypeChange() {
+          var tpType = document.getElementById('tptype').value;
+          var tpQty = document.getElementById('tpqty');
+          var tpQty2 = document.getElementById('tpqty2');
+          var tpPrice1 = document.getElementById('tpprice');
+          var tpPrice2 = document.getElementById('tpprice2');
+          var tpFibo1 = document.getElementById('tpfibo');
+          var tpFibo2 = document.getElementById('tpfibo2');
+
+          if (tpType === 'Price') {
+              tpQty.style.display = "block";
+              tpQty2.style.display = "block";
+              tpPrice1.style.display = "block";
+              tpPrice2.style.display = "block";
+              tpFibo1.style.display = "none";
+              tpFibo2.style.display = "none";
+          } else if (tpType === 'Fibolevel') {
+              tpQty.style.display = "block";
+              tpQty2.style.display = "block";
+              tpPrice1.style.display = "none";
+              tpPrice2.style.display = "none";
+              tpFibo1.style.display = "block";
+              tpFibo2.style.display = "block";
+          } else if (tpType === '3T ST') {
+              tpQty.style.display = "none";
+              tpQty2.style.display = "none";
+              tpPrice1.style.display = "none";
+              tpPrice2.style.display = "none";
+              tpFibo1.style.display = "none";
+              tpFibo2.style.display = "none";
+          }
+      }
+
+function handleSLTypeChange() {
+          var slType = document.getElementById('sltype').value;
+          var slPrice = document.getElementById('slprice');
+          var slFibo = document.getElementById('slfibo');
+
+          if (slType === 'Price') {
+              slPrice.style.display = "block";
+              slFibo.style.display = "none";
+          } else if (slType === 'Fibolevel') {
+              slPrice.style.display = "none";
+              slFibo.style.display = "block";
+          } else if (slType === '3T ST') {
+              slPrice.style.display = "none";
+              slFibo.style.display = "none";
+          }
+      }
+   function toggleContainers() {
+        var optionType = document.getElementById("option_type").value;
+        var futContainer = document.getElementById("Fut-container");
+        var optContainer = document.getElementById("Opt-container");
+
+        if (optionType === "EQ") {
+            futContainer.style.display = "none";
+            optContainer.style.display = "none";
+        } else if (optionType === "FUT") {
+            futContainer.style.display = "block";
+            optContainer.style.display = "none";
+        } else if (optionType === "CE" || optionType === "PE") {
+            futContainer.style.display = "none";
+            optContainer.style.display = "block";
+        }
+    }
+
+    function toggleStrikeOptions() {
+        var optionType = document.getElementById("option_type").value;
+        var strikeContainer = document.getElementById("strike-container");
+        if (optionType === "EQ" || optionType === "FUT") {
+            strikeContainer.style.display = "none";
+        } else {
+            strikeContainer.style.display = "block";
+        }
+        toggleContainers();
+        //fetchPrice();
+        //handleTPTypeChange();
+        //handleSLTypeChange();
+    }
+    function toggleExpiryOptions() {
+        var optionType = document.getElementById('option_type').value;
+        var expirySelect = document.getElementById('expiry');
+        var options = expirySelect.options;
+
+        for (var i = 0; i < options.length; i++) {
+            options[i].style.display = 'block';
+        }
+
+        if (optionType === 'FUT') {
+            for (var i = 0; i < options.length; i++) {
+                if (options[i].value === 'CurrentWeek' || options[i].value === 'NextWeek') {
+                    options[i].style.display = 'none';
+                }
+            }
+        }
+    }
+
+    // Call the function on page load to set the correct options based on the current selection
+    document.addEventListener('DOMContentLoaded', toggleExpiryOptions);
+    // Call both functions on page load to set the initial state
+    window.onload = function() {
+      
+        toggleStrikeOptions();
+        
+    };
+  </script>
+
+  <script type="09bdecaf2d557f0c9e6f5d25-text/javascript">
+function updateTimes() {
+    const symbolSelect = document.getElementById("symbol");
+    const selectedValue = symbolSelect.value;
+    const dynamicSymbols = ["SILVERM", "CRUDEOIL", "CRUDEOILM", "NATURALGAS", "ZINC", "COPPER", "MCXMETLDEX", "NATGASMINI", "GOLDM", "SILVER", "MCXBULLDEX", "GOLD", "STEELREBAR", "LEADMINI", "ZINCMINI", "LEAD", "ALUMINIUM", "MENTHAOIL", "ALUMINI", "NICKEL", "KAPAS", "SILVERMIC", "GOLDPETAL", "GOLDGUINEA", "GOLDTEN", "COTTONOIL", "COTTONCNDY"];
+    
+    const startTimeInput = document.getElementById("StartTime");
+    const exitTimeInput = document.getElementById("ExitTime");
+
+    // Check if selected value is in the dynamically populated symbols list
+    if (dynamicSymbols.includes(selectedValue)) {
+        startTimeInput.value = "09:05";
+        exitTimeInput.value = "23:40";
+    }
+}
+</script>
+  <script src="/cdn-cgi/scripts/7d0fa10a/cloudflare-static/rocket-loader.min.js" data-cf-settings="09bdecaf2d557f0c9e6f5d25-|49" defer></script><script defer src="https://static.cloudflareinsights.com/beacon.min.js/vcd15cbe7772f49c399c6a5babf22c1241717689176015" integrity="sha512-ZpsOmlRQV6y907TI0dKBHq9Md29nnaEIPlkf84rnaERnq6zvWvPUqr2ft8M1aS28oN72PdrCzSjY4U6VaAw1EQ==" data-cf-beacon='{"rayId":"933e8e15dfbfd821","version":"2025.4.0-1-g37f21b1","r":1,"token":"4d3decc133384af4be110d86e048913e","serverTiming":{"name":{"cfExtPri":true,"cfL4":true,"cfSpeedBrain":true,"cfCacheStatus":true}}}' crossorigin="anonymous"></script>
+</body>
+</html>

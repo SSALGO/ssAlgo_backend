@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" />
+<title>Add Order</title>
+</head>
+<style>
+    /* Initially hide the hidden input */
+    #trailHidden {
+        display: none;
+    }
+
+    /* Show the hidden input when the checkbox is checked */
+    #trailCheckbox:checked + #trailHidden {
+        display: block;
+    }
+</style>
+<body>
+<div class="container mt-4">
+<h2>Add SSALGO</h2>
+<form method="post" action="/add_eqssalgo?usersubscri=True">
+<div class="row">
+<div class="col">
+<div class="md-form">
+<label for="botname" class="form-control-sm">Bot Name</label>
+<input type="text" class="form-control form-control-sm" id="botname" name="botname" value required />
+</div></div>
+</div>
+<div class="row">
+<div class="col">
+<div class="md-form">
+<label for="symbol" class="form-control-sm">Symbol</label>
+<select class="form-control form-control-sm" id="symbol" name="symbol[]" multiple>
+<option value="ULTRACEMCO">
+ULTRACEMCO
+</option>
+<option value="UNITDSPR">
+UNITDSPR
+</option>
+<option value="TORNTPHARM">
+TORNTPHARM
+</option>
+<option value="TRENT">
+TRENT
+</option>
+<option value="TVSMOTOR">
+TVSMOTOR
+</option>
+<option value="UBL">
+UBL
+</option>
+<option value="TECHM">
+TECHM
+</option>
+<option value="TITAN">
+TITAN
+</option>
+<option value="UPL">
+UPL
+</option>
+<option value="VEDL">
+VEDL
+</option>
+<option value="VOLTAS">
+VOLTAS
+</option>
+<option value="WIPRO">
+WIPRO
+</option>
+<option value="ZYDUSLIFE">
+ZYDUSLIFE
+</option>
+<option value="TATAPOWER">
+TATAPOWER
+</option>
+<option value="CHOLAFIN">
+CHOLAFIN
+</option>
+<option value="CHAMBLFERT">
+CHAMBLFERT
+</option>
+<option value="CANFINHOME">
+CANFINHOME
+</option>
+<option value="CANBK">
+CANBK
+</option>
+<option value="BSOFT">
+BSOFT
+</option>
+<option value="BRITANNIA">
+BRITANNIA
+</option>
+<option value="BPCL">
+BPCL
+</option>
+<option value="CIPLA">
+CIPLA
+</option>
+<option value="BOSCHLTD">
+BOSCHLTD
+</option>
+<option value="BHEL">
+BHEL
+</option>
+<option value="BHARTIARTL">
+BHARTIARTL
+</option>
+<option value="BHARATFORG">
+BHARATFORG
+</option>
+<option value="BERGEPAINT">
+BERGEPAINT
+</option>
+<option value="BEL">
+BEL
+</option>
+<option value="BATAINDIA">
+BATAINDIA
+</option>
+<option value="BANKBARODA">
+BANKBARODA
+</option>
+<option value="BANDHANBNK">
+BANDHANBNK
+</option>
+<option value="BIOCON">
+BIOCON
+</option>
+<option value="BALRAMCHIN">
+BALRAMCHIN
+</option>
+<option value="COALINDIA">
+COALINDIA
+</option>
+<option value="COLPAL">
+COLPAL
+</option>
+<option value="GLENMARK">
+GLENMARK
+</option>
+<option value="GAIL">
+GAIL
+</option>
+<option value="FEDERALBNK">
+FEDERALBNK
+</option>
+<option value="EXIDEIND">
+EXIDEIND
+</option>
+<option value="ESCORTS">
+ESCORTS
+</option>
+<option value="EICHERMOT">
+EICHERMOT
+</option>
+<option value="DRREDDY">
+DRREDDY
+</option>
+<option value="DLF">
+DLF
+</option>
+<option value="COFORGE">
+COFORGE
+</option>
+<option value="DIXON">
+DIXON
+</option>
+<option value="DEEPAKNTR">
+DEEPAKNTR
+</option>
+<option value="DALBHARAT">
+DALBHARAT
+</option>
+<option value="DABUR">
+DABUR
+</option>
+<option value="CUMMINSIND">
+CUMMINSIND
+</option>
+<option value="CUB">
+CUB
+</option>
+<option value="CROMPTON">
+CROMPTON
+</option>
+<option value="COROMANDEL">
+COROMANDEL
+</option>
+<option value="CONCOR">
+CONCOR
+</option>
+<option value="DIVISLAB">
+DIVISLAB
+</option>
+<option value="GMRINFRA">
+GMRINFRA
+</option>
+<option value="BALKRISIND">
+BALKRISIND
+</option>
+<option value="GNFC">
+GNFC
+</option>
+<option value="GODREJPROP">
+GODREJPROP
+</option>
+<option value="ASIANPAINT">
+ASIANPAINT
+</option>
+<option value="ASTRAL">
+ASTRAL
+</option>
+<option value="HAVELLS">
+HAVELLS
+</option>
+<option value="HCLTECH">
+HCLTECH
+</option>
+<option value="HDFCBANK">
+HDFCBANK
+</option>
+<option value="ICICIGI">
+ICICIGI
+</option>
+<option value="ICICIBANK">
+ICICIBANK
+</option>
+<option value="HINDUNILVR">
+HINDUNILVR
+</option>
+<option value="HINDPETRO">
+HINDPETRO
+</option>
+<option value="HDFCAMC">
+HDFCAMC
+</option>
+<option value="APOLLOHOSP">
+APOLLOHOSP
+</option>
+<option value="HINDCOPPER">
+HINDCOPPER
+</option>
+<option value="HINDALCO">
+HINDALCO
+</option>
+<option value="HEROMOTOCO">
+HEROMOTOCO
+</option>
+<option value="HDFCLIFE">
+HDFCLIFE
+</option>
+<option value="APOLLOTYRE">
+APOLLOTYRE
+</option>
+<option value="ASHOKLEY">
+ASHOKLEY
+</option>
+<option value="GODREJCP">
+GODREJCP
+</option>
+<option value="HAL">
+HAL
+</option>
+<option value="GUJGASLTD">
+GUJGASLTD
+</option>
+<option value="GRASIM">
+GRASIM
+</option>
+<option value="GRANULES">
+GRANULES
+</option>
+<option value="ATUL">
+ATUL
+</option>
+<option value="AUBANK">
+AUBANK
+</option>
+<option value="AXISBANK">
+AXISBANK
+</option>
+<option value="AUROPHARMA">
+AUROPHARMA
+</option>
+<option value="BAJAJ-AUTO">
+BAJAJ-AUTO
+</option>
+<option value="BAJAJFINSV">
+BAJAJFINSV
+</option>
+<option value="BAJFINANCE">
+BAJFINANCE
+</option>
+<option value="ICICIPRULI">
+ICICIPRULI
+</option>
+<option value="IDEA">
+IDEA
+</option>
+<option value="IDFCFIRSTB">
+IDFCFIRSTB
+</option>
+<option value="IEX">
+IEX
+</option>
+<option value="OBEROIRLTY">
+OBEROIRLTY
+</option>
+<option value="NTPC">
+NTPC
+</option>
+<option value="NMDC">
+NMDC
+</option>
+<option value="NESTLEIND">
+NESTLEIND
+</option>
+<option value="NAVINFLUOR">
+NAVINFLUOR
+</option>
+<option value="NAUKRI">
+NAUKRI
+</option>
+<option value="OFSS">
+OFSS
+</option>
+<option value="PAGEIND">
+PAGEIND
+</option>
+<option value="SBIN">
+SBIN
+</option>
+<option value="SBILIFE">
+SBILIFE
+</option>
+<option value="SBICARD">
+SBICARD
+</option>
+<option value="SAIL">
+SAIL
+</option>
+<option value="RELIANCE">
+RELIANCE
+</option>
+<option value="RECLTD">
+RECLTD
+</option>
+<option value="RBLBANK">
+RBLBANK
+</option>
+<option value="RAMCOCEM">
+RAMCOCEM
+</option>
+<option value="ONGC">
+ONGC
+</option>
+<option value="PVRINOX">
+PVRINOX
+</option>
+<option value="POLYCAB">
+POLYCAB
+</option>
+<option value="PNB">
+PNB
+</option>
+<option value="PIIND">
+PIIND
+</option>
+<option value="PIDILITIND">
+PIDILITIND
+</option>
+<option value="PFC">
+PFC
+</option>
+<option value="PETRONET">
+PETRONET
+</option>
+<option value="PERSISTENT">
+PERSISTENT
+</option>
+<option value="PEL">
+PEL
+</option>
+<option value="POWERGRID">
+POWERGRID
+</option>
+<option value="SHREECEM">
+SHREECEM
+</option>
+<option value="NATIONALUM">
+NATIONALUM
+</option>
+<option value="MRF">
+MRF
+</option>
+<option value="KOTAKBANK">
+KOTAKBANK
+</option>
+<option value="JUBLFOOD">
+JUBLFOOD
+</option>
+<option value="JSWSTEEL">
+JSWSTEEL
+</option>
+<option value="JKCEMENT">
+JKCEMENT
+</option>
+<option value="JINDALSTEL">
+JINDALSTEL
+</option>
+<option value="ITC">
+ITC
+</option>
+<option value="IRCTC">
+IRCTC
+</option>
+<option value="IOC">
+IOC
+</option>
+<option value="INFY">
+INFY
+</option>
+<option value="INDUSTOWER">
+INDUSTOWER
+</option>
+<option value="INDUSINDBK">
+INDUSINDBK
+</option>
+<option value="INDIGO">
+INDIGO
+</option>
+<option value="INDIAMART">
+INDIAMART
+</option>
+<option value="INDHOTEL">
+INDHOTEL
+</option>
+<option value="IGL">
+IGL
+</option>
+<option value="IPCALAB">
+IPCALAB
+</option>
+<option value="MUTHOOTFIN">
+MUTHOOTFIN
+</option>
+<option value="LALPATHLAB">
+LALPATHLAB
+</option>
+<option value="LICHSGFIN">
+LICHSGFIN
+</option>
+<option value="MPHASIS">
+MPHASIS
+</option>
+<option value="MOTHERSON">
+MOTHERSON
+</option>
+<option value="MGL">
+MGL
+</option>
+<option value="MFSL">
+MFSL
+</option>
+<option value="METROPOLIS">
+METROPOLIS
+</option>
+<option value="MCX">
+MCX
+</option>
+<option value="MARUTI">
+MARUTI
+</option>
+<option value="MARICO">
+MARICO
+</option>
+<option value="LAURUSLABS">
+LAURUSLABS
+</option>
+<option value="MANAPPURAM">
+MANAPPURAM
+</option>
+<option value="M&amp;M">
+M&amp;M
+</option>
+<option value="LUPIN">
+LUPIN
+</option>
+<option value="LTTS">
+LTTS
+</option>
+<option value="LTIM">
+LTIM
+</option>
+<option value="LTF">
+LTF
+</option>
+<option value="LT">
+LT
+</option>
+<option value="M&amp;MFIN">
+M&amp;MFIN
+</option>
+<option value="SHRIRAMFIN">
+SHRIRAMFIN
+</option>
+<option value="SIEMENS">
+SIEMENS
+</option>
+<option value="SRF">
+SRF
+</option>
+<option value="SUNPHARMA">
+SUNPHARMA
+</option>
+<option value="AARTIIND">
+AARTIIND
+</option>
+<option value="ABB">
+ABB
+</option>
+<option value="ABBOTINDIA">
+ABBOTINDIA
+</option>
+<option value="ABCAPITAL">
+ABCAPITAL
+</option>
+<option value="ABFRL">
+ABFRL
+</option>
+<option value="ACC">
+ACC
+</option>
+<option value="ADANIENT">
+ADANIENT
+</option>
+<option value="TATAMOTORS">
+TATAMOTORS
+</option>
+<option value="TATACONSUM">
+TATACONSUM
+</option>
+<option value="TATACOMM">
+TATACOMM
+</option>
+<option value="TATACHEM">
+TATACHEM
+</option>
+<option value="SYNGENE">
+SYNGENE
+</option>
+<option value="SUNTV">
+SUNTV
+</option>
+<option value="ADANIPORTS">
+ADANIPORTS
+</option>
+<option value="ALKEM">
+ALKEM
+</option>
+<option value="AMBUJACEM">
+AMBUJACEM
+</option>
+<option value="TCS">
+TCS
+</option>
+<option value="TATASTEEL">
+TATASTEEL
+</option>
+</select>
+</div>
+</div>
+<div class="col">
+<div class="md-form">
+<label for="timeframe" class="form-control-sm">TimeFrame</label>
+<select class="form-control form-control-sm" id="timeframe" name="timeframe">
+<option value="5m">5m</option>
+<option value="10m">10m</option>
+<option value="15m">15m</option>
+<option value="30m">30m</option>
+<option value="1h">1h</option>
+<option value="2h">2h</option>
+
+<option value="4h">4h</option>
+
+<option value="1d">1D</option>
+</select>
+</div>
+</div>
+<div class="col">
+<div class="md-form ">
+<label for="r1" class="form-control-sm">R1</label>
+<input required class="form-control form-control-sm" id="r1" name="r1" required="True" type="number" step="1" value="2" />
+</div> </div>
+<div class="col">
+<div class="md-form ">
+<label for="k1" class="form-control-sm">K1</label>
+<input required class="form-control form-control-sm" id="k1" name="k1" required="True" type="number" step="1" value="2" />
+</div> </div>
+<div class="col">
+<div class="md-form ">
+<label for="r2" class="form-control-sm">R2</label>
+<input required class="form-control form-control-sm" id="r2" name="r2" required="True" type="number" step="1" value="2" />
+</div> </div>
+<div class="col">
+<div class="md-form ">
+<label for="k2" class="form-control-sm">K2</label>
+<input required class="form-control form-control-sm" id="k2" name="k2" required="True" type="number" step="1" value="2" />
+</div> </div>
+</div>
+<div class="row">
+<div class="col">
+<div class="md-form">
+<label for="Newsignal" class="form-control-sm">Signal</label>
+<select name="Newsignal" required="True" id="Newsignal" class="form-control form-control-sm">
+<option value="false"> Current Signal</option>
+<option value="true"> New Signal</option>
+</select>
+</div></div>
+<div class="col">
+<div class="md-form">
+<label for="USEMA" class="form-control-sm">USEMA</label>
+<select name="USEMA" required="True" id="USEMA" class="form-control form-control-sm">
+<option value="false"> No Ema</option>
+<option value="true"> With Ema</option>
+</select>
+</div></div>
+<div class="col">
+<div class="md-form">
+<label for="ema" class="form-control-sm">EMA</label>
+<input required class="form-control form-control-sm" id="ema" name="ema" required="True" type="number" min="1" value="200" />
+</div></div>
+<div class="col">
+<div class="md-form">
+<label for="Intraday" class="form-control-sm">Intraday</label>
+<select name="Intraday" required="True" id="Intraday" class="form-control form-control-sm">
+<option value="false"> Positional</option>
+<option value="true"> Intraday</option>
+</select>
+</div></div>
+<div class="col">
+<div class="md-form">
+<label for="FixedLot" class="form-control-sm">Amount/Split PCT</label>
+<select name="FixedLot" required="True" id="FixedLot" class="form-control form-control-sm">
+<option value="Fixed"> Fixed Amount</option>
+<option value="QTY"> Fixed QTY</option>
+<!--<option value="Split"> % Split</option>-->
+</select>
+</div></div>
+<div class="col">
+<div class="md-form">
+<label for="lot" class="form-control-sm">QTY/Amount</label>
+<input required class="form-control form-control-sm" id="lot" name="lot" required="True" type="number" min="0" value="10000" />
+</div>
+</div>
+
+<div class="col">
+<div class="md-form">
+<label for="FixedLot1" class="form-control-sm">FixedLot/Steps</label>
+<select name="FixedLot1" required="True" id="FixedLot1" class="form-control form-control-sm">
+<option value="FixedLot"> FixedLot</option>
+<option value="Steps"> Steps</option>
+<option value="Doubling"> Doubling</option>
+</select>
+</div></div>
+</div>
+<div class="row">
+<div class="col">
+<div class="md-form">
+<label for="pct_point" class="form-control-sm">PCT/Point</label>
+<select name="pct_point" required="True" id="pct_point" class="form-control form-control-sm">
+<option value="true"> PCT</option>
+<option value="false"> Points</option>
+</select>
+</div></div>
+<div class="col">
+<div class="md-form">
+<label for="pnlexit_tpslexit" class="form-control-sm">Exit Type</label>
+<select name="pnlexit_tpslexit" required="True" id="pnlexit_tpslexit" class="form-control form-control-sm">
+<option value="true"> PNL Exit</option>
+<option value="false"> TP/SL Exit</option>
+</select>
+</div></div>
+
+</div>
+<div class="row">
+<div class="col">
+<div class="md-form">
+<label for="ttw" class="form-control-sm">Timetoawait(minute)</label>
+<input required class="form-control form-control-sm" id="ttw" name="ttw" required="True" type="number" min="0" value="0" />
+</div></div>
+<div class="col">
+<div class="md-form">
+<label for="candle1" class="form-control-sm">1st Candle</label>
+<input required class="form-control form-control-sm" id="candle1" name="candle1" required="True" type="number" min="0" value="1" readonly />
+</div></div>
+<div class="col">
+<div class="md-form">
+<label for="candle2" class="form-control-sm">2nd Candle</label>
+<input required class="form-control form-control-sm" id="candle2" name="candle2" required="True" type="number" min="0" value="2" readonly />
+</div></div>
+</div>
+<div class="row">
+<div class="col">
+<div class="md-form">
+<label for="slicing" class="form-control-sm">Order Slicing</label>
+<input required class="form-control form-control-sm" id="slicing" name="slicing" required="True" type="number" min="0" value="20" />
+</div></div>
+<div class="col">
+<div class="md-form">
+<label for="StartTime" class="form-control-sm">StartTime</label>
+<input required class="form-control form-control-sm" id="StartTime" name="StartTime" required="True" type="time" value="09:17" />
+</div></div>
+<div class="col">
+<div class="md-form">
+<label for="ExitTime" class="form-control-sm">ExitTime</label>
+<input required class="form-control form-control-sm" id="ExitTime" name="ExitTime" required="True" type="time" value="15:30" />
+</div></div>
+</div>
+<div class="row">
+<div class="col">
+<div class="md-form">
+<label class="form-control-sm" name="trail" for="trail">Trail</label>
+<select name="trail" required="True" id="trail" class="form-control form-control-sm">
+<option value="1"   > Trail</option>
+<option value="0"   > No Trail</option>
+</select>
+</div>
+</div>
+<div class="col"><div class="md-form">
+<label for="trail_stoploss" class="form-control-sm">TSL</label>
+<input required="True" type="number" name="trail_stoploss" id="trail_stoploss" value="500" class="form-control form-control-sm" />
+</div>
+</div>
+<div class="col">
+<div class="md-form">
+<label for="tp_1" class="form-control-sm">Target</label>
+<input type="number" name="tp" required="True" id="tp_1" value="24999" class="form-control form-control-sm" />
+</div>
+</div>
+<div class="col">
+<div class="md-form">
+<label for="sl" class="form-control-sm">Stoploss</label>
+<input type="number" name="sl" id="sl" value="24999" required class="form-control form-control-sm" />
+<input type="hidden" name="maxprofit" id="maxprofit" value="100000" readonly required class="form-control form-control-sm" />
+<input type="hidden" name="maxloss" id="maxloss" value="10000" readonly required class="form-control form-control-sm" />
+<input type="hidden" name="position" id="position" value="out" required class="form-control form-control-sm" />
+<input type="hidden" name="botcode" id="botcode" value required class="form-control form-control-sm" />
+</div>
+</div>
+<div class="col">
+<div class="md-form">
+<label for="live" class="form-control-sm">Bot Type</label>
+<select name="live" required="True" id="live" class="form-control form-control-sm">
+<option value="true"> Live</option>
+<option value="false"> Paper</option>
+</select>
+</div></div>
+<div class="col">
+<div class="md-form">
+<label for="status" class="form-control-sm">Status</label>
+<select name="status" required="True" id="status" class="form-control form-control-sm">
+<option value="paused"> Stop</option>
+<option value="opened"> Start</option>
+</select>
+</div></div>
+<div class="col">
+<div class="md-form">
+<label class="form-control-sm">Submit</label>
+<br/>
+<button type="submit" class="btn btn-primary btn-sm">
+Add Order
+</button>
+</div>
+</div>
+</div>
+</form>
+</div>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js" type="d9c14f8ae05392472997b97a-text/javascript"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js" type="d9c14f8ae05392472997b97a-text/javascript"></script>
+<script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js" type="d9c14f8ae05392472997b97a-text/javascript"></script>
+<script src="/cdn-cgi/scripts/7d0fa10a/cloudflare-static/rocket-loader.min.js" data-cf-settings="d9c14f8ae05392472997b97a-|49" defer></script><script defer src="https://static.cloudflareinsights.com/beacon.min.js/vcd15cbe7772f49c399c6a5babf22c1241717689176015" integrity="sha512-ZpsOmlRQV6y907TI0dKBHq9Md29nnaEIPlkf84rnaERnq6zvWvPUqr2ft8M1aS28oN72PdrCzSjY4U6VaAw1EQ==" data-cf-beacon='{"rayId":"8d2eac577fccd233","version":"2024.10.1","r":1,"token":"4d3decc133384af4be110d86e048913e","serverTiming":{"name":{"cfExtPri":true,"cfL4":true,"cfSpeedBrain":true,"cfCacheStatus":true}}}' crossorigin="anonymous"></script>
+</body>
+</html>

@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="stylesheet"
+      href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css"
+    />
+    <title>Add Order</title>
+  </head>
+
+  <style>
+    /* Initially hide the hidden input */
+    #trailHidden {
+        display: none;
+    }
+
+    /* Show the hidden input when the checkbox is checked */
+    #trailCheckbox:checked + #trailHidden {
+        display: block;
+    }
+</style>
+
+  <body>
+    <div class="container mt-4" >
+      <h2>Add SSALGO</h2>
+      <form method="post" action="/add_ssalgo?usersubscri=True">
+
+
+        <div class="row">
+          <div class="col">
+        <div class="md-form">
+          <label for="botname" class="form-control-sm">Bot Name</label>
+          <input
+            type="text"
+            class="form-control form-control-sm"
+            id="botname"
+            name="botname"
+            value=""
+            required 
+            
+          />
+        </div></div>
+
+
+        </div>
+        <div class="row">
+          
+      
+        
+        <div class="col">
+        <div class="md-form" >
+          <label for="symbol" class="form-control-sm">Symbol</label>
+          
+          <select class="form-control form-control-sm" id="symbol" name="symbol" >
+            <option value="NIFTY" >NIFTY</option>
+            <option value="BANKNIFTY"  >BANKNIFTY</option>
+            
+            <option value="FINNIFTY" >FINNIFTY</option>
+            <option value="MIDCPNIFTY" >MIDCPNIFTY</option>
+            <option value="SENSEX" >SENSEX</option>
+
+        </select>
+
+        </div> </div> 
+
+<div class="col">
+
+        <div class="md-form">
+          <label for="Expiry" class="form-control-sm">Expiry</label>
+          
+                
+
+              <select class="form-control form-control-sm" id="Expiry" name="Expiry" >
+
+                  <option value="Current Week"  >Current Week</option>
+                  <option value="Next Week" >Next Week</option>
+                  <option value="Current Month" >Current Month</option>
+                  <option value="Next Month" >Next Month</option>
+              </select>
+         
+        </div> </div> 
+
+<div class="col">
+
+        <div class="md-form">
+          <label for="timeframe" class="form-control-sm">TimeFrame</label>
+
+          <select class="form-control form-control-sm" id="timeframe" name="timeframe">
+            <option value="3m" >3m</option>
+            <option value="5m" >5m</option>
+            <option value="10m" >10m</option>
+            <option value="15m" >15m</option>
+            <option value="30m" >30m</option>
+            <option value="1h" >1h</option>
+            <option value="2h" >2h</option>
+            <option value="2m" >2m</option>
+            <option value="1m" >1m</option>
+        </select>
+        </div> 
+
+
+      </div> 
+
+        <div class="col">
+        <div class="md-form ">
+          <label for="r1" 
+          class="form-control-sm">R1</label>
+          <input
+          required
+            class="form-control form-control-sm"
+            id="r1"
+            name="r1"
+            required="True"
+                  type="number"
+                  step="1"
+            value="2"
+          />
+        </div> </div> 
+
+        <div class="col">
+        <div class="md-form ">
+          <label for="k1" 
+          class="form-control-sm">K1</label>
+          <input
+          required
+            class="form-control form-control-sm"
+            id="k1"
+            name="k1"
+            required="True"
+                  type="number"
+                  step="1"
+            value="2"
+          />
+        </div> </div> 
+
+        <div class="col">
+        <div class="md-form ">
+          <label for="r2" 
+          class="form-control-sm">R2</label>
+          <input
+          required
+            class="form-control form-control-sm"
+            id="r2"
+            name="r2"
+            required="True"
+                  type="number"
+                  step="1"
+            value="2"
+          />
+        </div> </div> 
+
+        <div class="col">
+        <div class="md-form ">
+          <label for="k2" 
+          class="form-control-sm">K2</label>
+          <input
+          required
+            class="form-control form-control-sm"
+            id="k2"
+            name="k2"
+            required="True"
+                  type="number"
+                  step="1"
+            value="2"
+          />
+        </div> </div> 
+</div>
+
+<div class="row">
+<div class="col">
+        <div class="md-form">
+      <label for="Newsignal" class="form-control-sm">Signal</label>
+      <select name="Newsignal" required="True" id="Newsignal" class="form-control form-control-sm">
+        <option value="false"   > Current Signal</option>
+        <option value="true"   > New Signal</option>
+      </select>
+    </div></div>
+
+    <div class="col">
+    <div class="md-form">
+      <label for="USEMA" class="form-control-sm">USEMA</label>
+      <select name="USEMA" required="True" id="USEMA" class="form-control form-control-sm">
+        <option value="false"   > No Ema</option>
+        <option value="true"   > With Ema</option>
+        
+      </select>
+    </div></div>
+
+<div class="col">
+            <div class="md-form">
+      <label for="ema" class="form-control-sm">EMA</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="ema"
+            name="ema"
+            required="True"
+                  type="number"
+                  min="1"
+            value="200"
+          />
+    </div></div>
+
+<div class="col">
+    <div class="md-form">
+      <label for="Intraday" class="form-control-sm">Intraday</label>
+      <select name="Intraday" required="True" id="Intraday" class="form-control form-control-sm">
+        <option value="false"   > Positional</option>
+        <option value="true"   > Intraday</option>
+        
+      </select>
+    </div></div>
+
+
+<div class="col">
+    <div class="md-form">
+      <label for="FixedLot" class="form-control-sm">FixedLot/Steps</label>
+      <select name="FixedLot" required="True" id="FixedLot" class="form-control form-control-sm">
+        <option value="FixedLot"   > FixedLot</option>
+        <option value="Steps"   > Steps</option>
+        <option value="Doubling"   > Doubling</option>
+      </select>
+    </div></div>
+
+  </div>
+
+
+  <div class="row">
+
+<div class="col">
+    <div class="md-form">
+      <label for="BSmode" class="form-control-sm">(Buyer/Seller) Mode</label>
+      
+      
+      <select name="BSmode" required="True" id="BSmode" class="form-control form-control-sm">
+              <option value="true"   > Buyers</option>
+              <option value="false"   > Sellers</option>
+            </select>
+    </div></div>
+
+<div class="col">
+    <div class="md-form">
+      <label for="pct_point" class="form-control-sm">PCT/Point</label>
+      <select name="pct_point" required="True" id="pct_point" class="form-control form-control-sm">
+        <option value="true"   > PCT</option>
+        <option value="false"   > Points</option>
+      </select>
+    </div></div>
+
+
+<div class="col">
+    <div class="md-form">
+      <label for="pnlexit_tpslexit" class="form-control-sm">Exit Type</label>
+      <select name="pnlexit_tpslexit" required="True" id="pnlexit_tpslexit" class="form-control form-control-sm">
+        <option value="true"   > PNL Exit</option>
+        <option value="false"   > TP/SL Exit</option>
+      </select>
+    </div></div>
+
+
+        
+        
+        
+        
+      
+     
+      
+        
+      <div class="col">
+            <div class="md-form">
+      <label for="strike" class="form-control-sm">Strike</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="strike"
+            name="strike"
+            required="True"
+                  type="number"
+                  min="-10"
+            value="0"
+          />
+    </div></div>
+
+      
+      <div class="col">
+            <div class="md-form">
+      <label for="lot" class="form-control-sm">Lot</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="lot"
+            name="lot"
+            required="True"
+                  type="number"
+                  min="1"
+            value="1"
+
+            
+          />
+    </div></div>
+
+    <div class="col">
+            <div class="md-form">
+      <label for="initiallot" class="form-control-sm">Initial Lot</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="initiallot"
+            name="initiallot"
+            required="True"
+                  type="number"
+                  min="1"
+            value="1"
+
+            
+          />
+    </div></div>
+
+  </div>
+
+  <div class="row">
+
+
+    <div class="col">
+            <div class="md-form">
+      <label for="ttw" class="form-control-sm">Timetoawait(minute)</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="ttw"
+            name="ttw"
+            required="True"
+                  type="number"
+                  min="0"
+            value="0"
+            
+          />
+    </div></div>
+
+    <div class="col">
+      <div class="md-form">
+        <label for="stepvalue" class="form-control-sm">Step Value</label>
+        <input
+            required
+              class="form-control form-control-sm"
+              id="stepvalue"
+              name="stepvalue"
+              required="True"
+                    type="number"
+                    min="0"
+              value="1" />
+    </div>
+  </div>
+
+<div class="col">
+            <div class="md-form">
+      <label for="MultiFactor" class="form-control-sm">MultiFactor</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="MultiFactor"
+            name="MultiFactor"
+            required="True"
+                  type="number"
+                  min="0"
+            value="1"
+            readonly
+          />
+    </div></div>
+
+
+<div class="col">
+            <div class="md-form">
+      <label for="candle1" class="form-control-sm">1st Candle</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="candle1"
+            name="candle1"
+            required="True"
+                  type="number"
+                  min="0"
+            value="1"
+            readonly
+          />
+    </div></div>
+
+
+<div class="col">
+            <div class="md-form">
+      <label for="candle2" class="form-control-sm">2nd Candle</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="candle2"
+            name="candle2"
+            required="True"
+                  type="number"
+                  min="0"
+            value="2"
+            readonly
+          />
+    </div></div>
+
+
+  </div>
+
+
+  <div class="row">
+<div class="col">
+            <div class="md-form">
+      <label for="slicing" class="form-control-sm">Order Slicing</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="slicing"
+            name="slicing"
+            required="True"
+                  type="number"
+                  min="0"
+            value="20"
+          />
+    </div></div>
+
+<div class="col">
+            <div class="md-form">
+      <label for="DaysHead" class="form-control-sm">DaysHead</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="DaysHead"
+            name="DaysHead"
+            required="True"
+                  type="number"
+                  min="0"
+            value="0"
+          />
+    </div></div>
+
+    <div class="col">
+            <div class="md-form">
+      <label for="RolloverTime" class="form-control-sm">RolloverTime</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="RolloverTime"
+            name="RolloverTime"
+            required="True"
+                  type="time" value="13:01"  
+          />
+    </div></div>
+      <div class="col">
+            <div class="md-form">
+      <label for="StartTime" class="form-control-sm">StartTime</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="StartTime"
+            name="StartTime"
+            required="True"
+                  type="time" value="09:17"  
+          />
+    </div></div>
+
+    <div class="col">
+            <div class="md-form">
+      <label for="ExitTime" class="form-control-sm">ExitTime</label>
+      <input
+          required
+            class="form-control form-control-sm"
+            id="ExitTime"
+            name="ExitTime"
+            required="True"
+                  type="time" value="15:20"  
+          />
+    </div></div>
+</div>
+
+
+<div class="row">
+  <div class="col">
+              <div class="md-form">
+                <label class="form-control-sm" name="trail" for="trail">Trail</label>
+        <select name="trail" required="True" id="trail" class="form-control form-control-sm">
+                    <option value="1"   > Trail</option>
+                    <option value="0"   > No Trail</option>
+                </select>
+          </div>
+            </div>
+      
+            <div class="col"><div class="md-form">
+            <label for="trail_stoploss" class="form-control-sm">TSL</label>
+                  <input
+                  required="True"
+              type="number"
+              name="trail_stoploss"
+              id="trail_stoploss"
+              value="500"
+              class="form-control form-control-sm"
+            />
+      
+          </div>
+            
+          </div>
+      
+          <div class="col">
+            
+              <div class="md-form">
+            <label for="tp_1" class="form-control-sm">Target</label>
+      
+            <input type="number" name="tp" required="True"  id="tp_1" value="24999" class="form-control form-control-sm" />
+          </div>
+            </div>
+            <div class="col">
+              <div class="md-form">
+            <label for="sl" class="form-control-sm">Stoploss</label>
+      
+            <input type="number" name="sl" id="sl" value="24999" required class="form-control form-control-sm" />
+            <input type="hidden" name="maxprofit" id="maxprofit" value="100000" readonly required class="form-control form-control-sm" />
+            <input type="hidden" name="maxloss" id="maxloss" value="10000" readonly required class="form-control form-control-sm" />
+            <input type="hidden" name="position" id="position" value="out" required class="form-control form-control-sm" />
+            <input type="hidden" name="botcode" id="botcode" value="" required class="form-control form-control-sm" />
+
+            
+          </div>
+        </div>
+        
+        
+
+<div class="col">
+    <div class="md-form">
+      <label for="live" class="form-control-sm">Bot Type</label>
+      <select name="live" required="True" id="pnlexit_tpslexit" class="form-control form-control-sm">
+        <option value="true"   > Live</option>
+        <option value="false"   > Paper</option>
+      </select>
+    </div></div>
+
+
+<div class="col">
+    <div class="md-form">
+      <label for="status" class="form-control-sm">Status</label>
+      <select name="status" required="True" id="status" class="form-control form-control-sm">
+        <option value="paused"   > Stop</option>
+        <option value="opened"   > Start</option>
+        
+        
+      </select>
+    </div></div>
+
+      <div class="col">
+        <div class="md-form">
+          <label  class="form-control-sm">Submit</label>
+          <br />
+          <button type="submit" class="btn btn-primary btn-sm">
+            Add Order
+          </button>
+        </div>
+      </div>
+
+      </div>
+
+
+
+
+
+
+
+
+
+
+
+        
+      
+      
+      
+      
+            
+        
+
+
+      </form>
+    </div>
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js"></script>
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+  </body>
+</html>

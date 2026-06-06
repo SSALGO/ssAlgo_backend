@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <!-- Head content... -->
+  </head>
+  <body>
+    <nav class="navbar navbar-expand-lg navbar-light bg-light">
+      <!-- Navbar content... -->
+    </nav>
+
+    <div class="container mt-4">
+      {% if authenticated %}
+      <h2>Welcome, {{ current_user }}!</h2>
+      <p>This is your dashboard content.</p>
+      <!-- Add your dashboard content here -->
+      {% else %}
+      <div class="alert alert-danger" role="alert">
+        Missing Authorization Header. Please
+        <a href="{{ url_for('login') }}" class="alert-link">log in</a>.
+      </div>
+      {% endif %}
+
+      <!-- Include Bootstrap JS and Popper.js -->
+      <!-- Script content... -->
+    </div>
+  </body>
+</html>

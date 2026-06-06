@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Update Subscription</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+</head>
+<body>
+    <div class="container mt-5">
+        <h2>Update Subscription</h2>
+        <form method="POST" action="/update_subscription/{{ subscription['_id']}}">
+            <div class="form-group">
+                <label for="user">Start Date:</label>
+                <input type="text" class="form-control" id="user" name="user" value="{{ subscription['user'] }}" readonly required>
+            </div>
+            <div class="form-group">
+                <label for="start">Start Date:</label>
+                <input type="date" class="form-control" id="start" name="start" value="{{ subscription['start'] }}" required>
+            </div>
+            <div class="form-group">
+                <label for="end">End Date:</label>
+                <input type="date" class="form-control" id="end" name="end" value="{{ subscription['end'] }}" required>
+            </div>
+            <div class="form-group">
+                <label for="subtype">Subscription Type:</label>
+                <select class="form-control" id="subtype" name="subtype" required>
+                    <option value="free" {% if subscription['subtype'] == 'free' %} selected {% endif %}>Free</option>
+                    <option value="paid" {% if subscription['subtype'] == 'paid' %} selected {% endif %}>Paid</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Update Subscription</button>
+        </form>
+    </div>
+</body>
+</html>

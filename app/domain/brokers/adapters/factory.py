@@ -9,6 +9,7 @@ from .paper import PaperBrokerAdapter
 from .shoonya import ShoonyaBrokerAdapter
 from .smc import SMCBrokerAdapter
 from .zerodha import ZerodhaBrokerAdapter
+from app.domain.brokers.registry import BROKER_STATUS
 
 
 class BrokerAdapterFactory:
@@ -33,6 +34,17 @@ class BrokerAdapterFactory:
         self.risk_service = risk_service
 
     def create(self, broker_name):
+        registry = BROKER_STATUS.get(broker_name, {})
+        if registry and not registry.get("enabled", True):
+            adapter_class = self.ADAPTERS.get(broker_name)
+            if not adapter_class:
+                raise ValueError(f"Unsupported broker: {broker_name}")
+            return adapter_class(
+                db=self.db,
+                health_service=self.health_service,
+                order_lifecycle=self.order_lifecycle,
+                risk_service=self.risk_service,
+            )
         adapter_class = self.ADAPTERS.get(broker_name)
         if not adapter_class:
             raise ValueError(f"Unsupported broker: {broker_name}")

@@ -1,0 +1,255 @@
+from app.api.legacy_compat.common import *
+
+
+def api_strategys(_admin=Depends(require_admin)):
+    data = [
+        clean_document(doc)
+        for doc in collection("strategies").find({})
+        if doc.get("status") in ACTIVE_STRATEGY_STATUSES
+    ]
+    return response("Fetched Successfully Strategies", data)
+
+
+async def api_add_strategy_form(request: Request, user=Depends(get_current_user)):
+    payload = await payload_from_request(request)
+    strategy = form_value(payload, "strategy").lower()
+    if not strategy:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="strategy is required")
+    page = f"{strategy}.html"
+    action_url = "/" + "api_" + strategy.replace("_form", "")
+    strategy_limit = int(user.get("StrategyLimit", 10))
+    return response("Successfully Fetched Strategy Form", {
+        "page": strategy_forms().get(page, []),
+        "StrategyLimit": strategy_limit,
+        "StrategyRemaining": strategy_limit - active_strategy_units(current_username(user)),
+        "action_url": action_url,
+    })
+
+
+async def api_edit_strategy_form(order_time: str, user=Depends(get_current_user)):
+    username = current_username(user)
+    order = collection("strategies").find_one({"botcode": str(order_time), "user": username})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    info = clean_document(order) or {}
+    info.pop("_id", None)
+    if info.get("strategy") == "EQSSALGO":
+        info.pop("symbol", None)
+    readonly = ["botname", "_id", "symbol", "time", "Expiry", "BSmode", "lot", "initiallot", "MultiFactor", "candle1", "candle2"]
+    if info.get("status") == "paused":
+        readonly = ["botname", "_id", "symbol", "time", "Expiry", "BSmode", "MultiFactor", "candle1", "candle2"]
+    limit = int(user.get("StrategyLimit", 10))
+    algo = str(order.get("strategy", "")).lower()
+    return response("Successfully Fetched Strategy Form", {
+        "page": strategy_forms().get(strategy_form_page(order), []),
+        "StrategyLimit": limit,
+        "StrategyRemaining": limit - active_strategy_units(username),
+        "info": info,
+        "action_url": f"/api_edit_{algo}",
+        "readonly": readonly,
+    })
+
+
+def api_edit_admin_strategy_form(order_time: str, _admin=Depends(require_admin)):
+    order = collection("strategies").find_one({"botcode": str(order_time)})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    info = clean_document(order) or {}
+    info.pop("_id", None)
+    algo = str(order.get("strategy", "")).lower()
+    return response("Successfully Fetched Strategy Form", {
+        "page": strategy_forms().get(strategy_form_page(order), []),
+        "info": info,
+        "action_url": f"/api_edit_admin_{algo}",
+    })
+
+
+async def api_edit_strategyinput(request: Request, _admin=Depends(require_admin)):
+    payload = await payload_from_request(request)
+    strategy = form_value(payload, "strategy")
+    if not strategy:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="strategy is required")
+    existing = collection("strategyinput").find_one({"strategy": strategy})
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    data = {
+        "strategy": strategy,
+        "r1": float(form_value(payload, "r1")),
+        "k1": float(form_value(payload, "k1")),
+        "r2": float(form_value(payload, "r2")),
+        "k2": float(form_value(payload, "k2")),
+        "timeframe": form_value(payload, "timeframe"),
+    }
+    collection("strategyinput").update_one({"strategy": strategy}, {"$set": data})
+    return response("Strategy input updated successfully")
+
+
+async def api_edit_strategyinput_form(request: Request, _admin=Depends(require_admin)):
+    payload = await payload_from_request(request)
+    strategy = form_value(payload, "strategy")
+    order = collection("strategyinput").find_one({"strategy": strategy})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    data = clean_document(order) or {}
+    data["action_url"] = "/api_edit_strategyinput"
+    return response("Strategy input form fetched", data)
+
+
+def make_add_strategy_endpoint(kind, message):
+    async def endpoint(request: Request, user=Depends(get_current_user)):
+        payload = await payload_from_request(request)
+        doc = build_strategy(kind, payload, user)
+        inserted_id = collection("strategies").insert_one(doc).inserted_id
+        return response(message, {"id": str(inserted_id), "botcode": doc.get("botcode")})
+
+    endpoint.__name__ = f"add_{kind}_strategy"
+    return endpoint
+
+
+def make_edit_strategy_endpoint(kind, message, *, admin=False):
+    async def endpoint(request: Request, user=Depends(require_admin if admin else get_current_user)):
+        payload = await payload_from_request(request)
+        botcode = form_value(payload, "botcode") or form_value(payload, "id")
+        if not botcode:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="botcode is missing")
+        query = {"botcode": botcode}
+        if not admin:
+            query["user"] = current_username(user)
+        existing = collection("strategies").find_one(query)
+        if not existing:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+        doc = build_strategy(kind, payload, user, existing=existing, admin=admin)
+        update = {"$set": doc}
+        if kind == "fractalnubiatimehedgeorder" and (
+            existing.get("legs") != doc.get("legs") or existing.get("method") != doc.get("method")
+        ):
+            update = fractal_reset_update(botcode, None if admin else current_username(user), doc)
+        result = collection("strategies").update_one(query, update)
+        if result.matched_count == 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+        return response(message, {"botcode": botcode})
+
+    endpoint.__name__ = f"{'admin_' if admin else ''}edit_{kind}_strategy"
+    return endpoint
+
+
+async def api_stop_ssalgo(request: Request, user=Depends(get_current_user)):
+    payload = await payload_from_request(request)
+    botcode = form_value(payload, "id") or form_value(payload, "botcode")
+    result = collection("strategies").update_one(
+        {"botcode": botcode, "user": current_username(user)},
+        {"$set": {"status": "paused"}},
+    )
+    mark_strategy_positions_exit(botcode, current_username(user))
+    if result.matched_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    return response("Successfully Stop SSALGO Strategy")
+
+
+async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
+    payload = await payload_from_request(request)
+    botcode = form_value(payload, "id") or form_value(payload, "botcode")
+    result = collection("strategies").update_one(
+        {"botcode": botcode, "user": current_username(user)},
+        fractal_reset_update(botcode, current_username(user), {"status": "opened"}),
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    return response("Successfully started SSALGO strategy")
+
+
+async def api_stop_admin_ssalgo(request: Request, _admin=Depends(require_admin)):
+    payload = await payload_from_request(request)
+    botcode = form_value(payload, "id") or form_value(payload, "botcode")
+    result = collection("strategies").update_one({"botcode": botcode}, {"$set": {"status": "paused"}})
+    mark_strategy_positions_exit(botcode)
+    if result.matched_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    return response("Successfully stopped SSALGO strategy")
+
+
+async def api_start_admin_ssalgo(request: Request, _admin=Depends(require_admin)):
+    payload = await payload_from_request(request)
+    botcode = form_value(payload, "id") or form_value(payload, "botcode")
+    result = collection("strategies").update_one(
+        {"botcode": botcode},
+        fractal_reset_update(botcode, None, {"status": "opened"}),
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    return response("Successfully started SSALGO strategy")
+
+
+async def api_delete_admin_ssalgo(request: Request, _admin=Depends(require_admin)):
+    payload = await payload_from_request(request)
+    botcode = form_value(payload, "id") or form_value(payload, "botcode")
+    result = collection("strategies").update_one({"botcode": botcode}, {"$set": {"status": "closed"}})
+    mark_strategy_positions_exit(botcode)
+    if result.matched_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found.")
+    return response("Successfully closed the strategy.")
+
+
+async def api_delete_strategy(request: Request, user=Depends(get_current_user)):
+    payload = await payload_from_request(request)
+    botcode = form_value(payload, "id") or form_value(payload, "botcode")
+    result = collection("strategies").update_one(
+        {"botcode": botcode, "user": current_username(user)},
+        {"$set": {"status": "closed"}},
+    )
+    mark_strategy_positions_exit(botcode, current_username(user))
+    if result.matched_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found or you do not have permission to close it.")
+    return response("Successfully closed the strategy.")
+
+
+router = APIRouter(tags=["legacy strategies"])
+
+router.add_api_route("/api_strategys", api_strategys, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_add_strategy_form", api_add_strategy_form, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_add_strategy_form/", api_add_strategy_form, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_edit_strategy_form/{order_time}", api_edit_strategy_form, methods=["POST"], response_model=ApiResponse)
+router.add_api_route(
+    "/api_edit_admin_strategy_form/{order_time}",
+    api_edit_admin_strategy_form,
+    methods=["POST"],
+    response_model=ApiResponse,
+)
+router.add_api_route("/api_edit_strategyinput", api_edit_strategyinput, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_edit_strategyinput_form", api_edit_strategyinput_form, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_stop_ssalgo", api_stop_ssalgo, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_start_ssalgo", api_start_ssalgo, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_stop_admin_ssalgo", api_stop_admin_ssalgo, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_start_admin_ssalgo", api_start_admin_ssalgo, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_delete_admin_ssalgo", api_delete_admin_ssalgo, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_delete_strategy", api_delete_strategy, methods=["POST"], response_model=ApiResponse)
+
+for route_path, (strategy_kind, success_message) in ADD_STRATEGY_ROUTES.items():
+    router.add_api_route(
+        route_path,
+        make_add_strategy_endpoint(strategy_kind, success_message),
+        methods=["POST"],
+        response_model=ApiResponse,
+    )
+
+for route_path, (strategy_kind, success_message) in EDIT_STRATEGY_ROUTES.items():
+    router.add_api_route(
+        route_path,
+        make_edit_strategy_endpoint(strategy_kind, success_message),
+        methods=["POST"],
+        response_model=ApiResponse,
+    )
+
+for route_path, (strategy_kind, success_message) in ADMIN_EDIT_STRATEGY_ROUTES.items():
+    router.add_api_route(
+        route_path,
+        make_edit_strategy_endpoint(strategy_kind, success_message, admin=True),
+        methods=["POST"],
+        response_model=ApiResponse,
+    )
+    router.add_api_route(
+        f"{route_path}/",
+        make_edit_strategy_endpoint(strategy_kind, success_message, admin=True),
+        methods=["POST"],
+        response_model=ApiResponse,
+    )

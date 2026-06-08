@@ -1,0 +1,137 @@
+from app.api.legacy_compat.common import *
+
+
+def api_user_profile(user=Depends(get_current_user)):
+    username = current_username(user)
+    profile = clean_document(user, hide_password=True) or {}
+    profile.pop("_id", None)
+    profile.setdefault("day_profit_limit", "25000")
+    profile.setdefault("day_loss_limit", "25000")
+    profile.setdefault("trade_limit", "100")
+    sub = collection("subscriptionperiod").find_one({"user": username})
+    profile["end"] = sub.get("end", "None") if sub else "None"
+    profile["subtype"] = sub.get("subtype", "None") if sub else "None"
+    profile["StrategyRemaining"] = int(profile.get("StrategyLimit", 10)) - active_strategy_units(username)
+    return response("Complete User Profile", {key: str(value) for key, value in profile.items()})
+
+
+def api_users(_admin=Depends(require_admin)):
+    users = []
+    for user in collection("users").find({}):
+        if "StrategyLimit" not in user:
+            user["StrategyLimit"] = 10
+            collection("users").update_one({"username": user["username"]}, {"$set": {"StrategyLimit": 10}})
+        cleaned = clean_document(user, hide_password=True)
+        cleaned.pop("_id", None)
+        users.append(cleaned)
+    return response("Users fetched successfully", users)
+
+
+async def api_update_user(user_id: str, request: Request, _admin=Depends(require_admin)):
+    payload = await payload_from_request(request)
+    data = {
+        "username": form_value(payload, "username"),
+        "email": form_value(payload, "email"),
+        "mobile": form_value(payload, "mobile"),
+        "StrategyLimit": form_value(payload, "StrategyLimit", 10),
+    }
+    collection("users").update_one({"_id": object_id(user_id, "user_id")}, {"$set": data})
+    return response("updated Successfully User", data)
+
+
+def api_delete_user(user_id: str, _admin=Depends(require_admin)):
+    result = collection("users").delete_one({"_id": object_id(user_id, "user_id")})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return response("Successfully Deleted User")
+
+
+async def api_forgot_reset_password(request: Request):
+    payload = await payload_from_request(request)
+    email = str(form_value(payload, "email")).lower()
+    if not email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is required.")
+    user = collection("users").find_one({"email": email})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No user found with that email address.")
+    reset_token = user.get("reset_token") or secrets.token_urlsafe(32)
+    collection("users").update_one({"_id": user["_id"]}, {"$set": {"reset_token": reset_token}})
+    return response("Password reset token created.", {"reset_token": reset_token})
+
+
+async def api_reset_password(reset_token: str, request: Request):
+    user = collection("users").find_one({"reset_token": reset_token})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token.")
+    if request.method == "GET":
+        return response("Reset token is valid. You can now reset your password.")
+    payload = await payload_from_request(request)
+    new_password = form_value(payload, "new_password")
+    confirm_password = form_value(payload, "confirm_password")
+    if not new_password or new_password != confirm_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Passwords do not match.")
+    import bcrypt
+
+    collection("users").update_one(
+        {"_id": user["_id"]},
+        {"$set": {"password": bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()), "reset_token": None}},
+    )
+    return response("Your password has been successfully reset. You can now log in with your new password.")
+
+
+async def api_forgot_otp_reset_password(request: Request):
+    payload = await payload_from_request(request)
+    email = str(form_value(payload, "email")).lower()
+    user = collection("users").find_one({"email": email})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No user found with that email address.")
+    otp = secrets.randbelow(900000) + 100000
+    expiration = datetime.datetime.utcnow() + datetime.timedelta(minutes=10)
+    collection("users").update_one({"_id": user["_id"]}, {"$set": {"otp": otp, "otp_expiration": expiration}})
+    return response("OTP created.", {"otp": otp, "expires_at": expiration.isoformat()})
+
+
+def verify_otp(email, otp):
+    user = collection("users").find_one({"email": str(email).lower()})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No user found with that email address.")
+    if str(user.get("otp")) != str(otp):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP.")
+    if user.get("otp_expiration") and user["otp_expiration"] < datetime.datetime.utcnow():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired.")
+    return user
+
+
+async def api_otp_verify(request: Request):
+    payload = await payload_from_request(request)
+    verify_otp(form_value(payload, "email"), form_value(payload, "otp"))
+    return response("Your OTP has been successfully Matched.")
+
+
+async def api_otp_reset_password(request: Request):
+    payload = await payload_from_request(request)
+    user = verify_otp(form_value(payload, "email"), form_value(payload, "otp"))
+    new_password = form_value(payload, "new_password")
+    confirm_password = form_value(payload, "confirm_password")
+    if not new_password or new_password != confirm_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Passwords do not match.")
+    import bcrypt
+
+    collection("users").update_one(
+        {"_id": user["_id"]},
+        {"$set": {"password": bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()), "otp": None, "otp_expiration": None}},
+    )
+    return response("Your password has been successfully reset. You can now log in with your new password.")
+
+
+router = APIRouter(tags=["legacy users"])
+
+router.add_api_route("/api_user_profile", api_user_profile, methods=["GET", "POST"], response_model=ApiResponse)
+router.add_api_route("/api_users", api_users, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_update_user/{user_id}", api_update_user, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_delete_user/{user_id}", api_delete_user, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_forgot_reset_password", api_forgot_reset_password, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_reset_password/{reset_token}", api_reset_password, methods=["GET", "POST"], response_model=ApiResponse)
+router.add_api_route("/api_forgot_otp_reset_password", api_forgot_otp_reset_password, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_otp_verify", api_otp_verify, methods=["POST"], response_model=ApiResponse)
+router.add_api_route("/api_otp_reset_password", api_otp_reset_password, methods=["POST"], response_model=ApiResponse)

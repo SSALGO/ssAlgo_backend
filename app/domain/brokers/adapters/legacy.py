@@ -2,22 +2,44 @@ from .base import BrokerAdapter
 
 
 class LegacyConnectorBrokerAdapter(BrokerAdapter):
-    """Placeholder adapter for live brokers still implemented inside connector.py."""
+    """Disabled adapter for brokers that are visible but not safe for live use."""
 
     broker_name = "legacy"
 
     def login(self, credentials):
+        if self.health_service:
+            self.health_service.update_health(
+                credentials.user,
+                self.broker_name,
+                login_status="disabled",
+                websocket_status="disabled",
+                last_error="Live adapter migration is not complete",
+            )
         return {
             "success": False,
             "broker": self.broker_name,
-            "message": "Live adapter is still handled by connector.py and is not migrated yet.",
+            "status": "disabled",
+            "message": "Live adapter migration is not complete; broker is disabled for live trading.",
         }
 
     def place_order(self, order):
-        raise NotImplementedError(f"{self.broker_name} adapter migration is not complete")
+        return {
+            "success": False,
+            "broker": self.broker_name,
+            "action": "place_order",
+            "status": "rejected",
+            "message": "Live adapter migration is not complete; order was not sent.",
+        }
 
     def cancel_order(self, user, order_id):
-        raise NotImplementedError(f"{self.broker_name} cancel_order is not migrated yet")
+        return {
+            "success": False,
+            "broker": self.broker_name,
+            "action": "cancel_order",
+            "status": "rejected",
+            "broker_order_id": str(order_id),
+            "message": "Live adapter migration is not complete; cancel was not sent.",
+        }
 
     def positions(self, user):
         return []
@@ -29,4 +51,11 @@ class LegacyConnectorBrokerAdapter(BrokerAdapter):
         return {}
 
     def subscribe(self, symbols, **kwargs):
-        return {"success": False, "symbols": symbols, "message": "Subscription is still handled by connector.py"}
+        return {
+            "success": False,
+            "broker": self.broker_name,
+            "action": "subscribe",
+            "status": "disabled",
+            "symbols": list(symbols or []),
+            "message": "Live adapter migration is not complete; websocket subscription is disabled.",
+        }

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from app.api.fastapi_auth import require_admin
 from app.api.fastapi_schemas import ApiResponse
@@ -40,10 +40,18 @@ def worker_stop(
 
 
 @worker_router.post("/commands/{command}", response_model=ApiResponse)
-def worker_command(
+async def worker_command(
     command: str,
+    request: Request,
     _admin=Depends(require_admin),
     control: WorkerControlService = Depends(get_worker_control),
 ):
-    queued = control.enqueue(command, _admin["username"])
+    payload = {}
+    if request.headers.get("content-type", "").startswith("application/json"):
+        body = await request.json()
+        payload = body if isinstance(body, dict) else {}
+    else:
+        form = await request.form()
+        payload = {key: value for key, value in form.items()}
+    queued = control.enqueue(command, _admin["username"], payload=payload)
     return ApiResponse(success=True, message="Worker command queued", data=queued)

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.fastapi_auth import require_admin
 from app.api.fastapi_schemas import ApiResponse
-from app.api.native_legacy_routes import (
+from app.api.legacy_compat.common import (
     ADD_STRATEGY_ROUTES,
     ADMIN_EDIT_STRATEGY_ROUTES,
     EDIT_STRATEGY_ROUTES,

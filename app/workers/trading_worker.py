@@ -2,19 +2,38 @@ import logging
 import threading
 import time
 
+from app.domain.brokers.adapters import BrokerAdapterFactory, BrokerCredentials, BrokerOrder
+from app.domain.brokers.health import BrokerHealthService
+from app.domain.orders.lifecycle import OrderLifecycleService
+from app.domain.risk.service import RiskControlService
 from app.workers.control import WorkerControlService
 
 
-class TradingWorker:
-    """Process-safe placeholder for moving trading loops outside Flask."""
+logger = logging.getLogger(__name__)
 
-    def __init__(self, health_service=None, db=None, interval_seconds=1):
-        self.health_service = health_service
+
+class TradingWorker:
+    """Owns broker maintenance, market subscriptions, and queued trade execution."""
+
+    def __init__(self, health_service=None, db=None, interval_seconds=1, relogin_interval_seconds=60, subscription_interval_seconds=30):
         self.db = db
+        self.health_service = health_service or (BrokerHealthService(db) if db is not None else None)
+        self.order_lifecycle = OrderLifecycleService(db) if db is not None else None
+        self.risk_service = RiskControlService(db)
+        self.adapter_factory = BrokerAdapterFactory(
+            db=db,
+            health_service=self.health_service,
+            order_lifecycle=self.order_lifecycle,
+            risk_service=self.risk_service,
+        ) if db is not None else None
         self.control = WorkerControlService(db) if db is not None else None
         self.interval_seconds = interval_seconds
+        self.relogin_interval_seconds = relogin_interval_seconds
+        self.subscription_interval_seconds = subscription_interval_seconds
         self._stop_event = threading.Event()
         self._thread = None
+        self._last_relogin = 0
+        self._last_subscription = 0
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -27,8 +46,185 @@ class TradingWorker:
         if self._thread:
             self._thread.join(timeout=5)
 
+    def _users_with_broker_credentials(self, user=None, broker=None):
+        if self.db is None:
+            return []
+        rows = []
+        query = {}
+        if user:
+            query["user"] = user
+        if broker:
+            query["broker"] = broker
+        for api in self.db["apis"].find(query):
+            api_user = api.get("user")
+            api_broker = api.get("broker")
+            if api_user and api_broker:
+                rows.append((api_user, api_broker))
+        return rows
+
+    def refresh_broker_logins(self, user=None, broker=None):
+        refreshed = []
+        for user, broker in self._users_with_broker_credentials(user=user, broker=broker):
+            try:
+                adapter = self.adapter_factory.create(broker)
+                result = adapter.login(BrokerCredentials(user=user, broker=broker))
+                refreshed.append({"user": user, "broker": broker, "result": result})
+            except Exception as exc:
+                if self.health_service:
+                    self.health_service.update_health(
+                        user,
+                        broker,
+                        login_status="rejected",
+                        last_error=str(exc),
+                    )
+                refreshed.append({"user": user, "broker": broker, "error": str(exc)})
+        return refreshed
+
+    def _active_strategy_symbols(self):
+        if self.db is None:
+            return {}
+        symbols_by_user_broker = {}
+        for strategy in self.db["strategies"].find({"status": {"$in": ["opened", "paused"]}}):
+            user = strategy.get("user")
+            if not user:
+                continue
+            broker_row = self.db["broker"].find_one({"user": user}) or {}
+            broker = broker_row.get("selectedbroker") or "paper"
+            symbols = strategy.get("symbol") or strategy.get("symbol[]") or []
+            if isinstance(symbols, str):
+                symbols = [symbols]
+            key = (user, broker)
+            symbols_by_user_broker.setdefault(key, set()).update(str(symbol).strip() for symbol in symbols if str(symbol).strip())
+        return symbols_by_user_broker
+
+    def refresh_subscriptions(self, user=None, broker=None):
+        results = []
+        target_user = user
+        target_broker = broker
+        for (strategy_user, strategy_broker), symbols in self._active_strategy_symbols().items():
+            if target_user and target_user != strategy_user:
+                continue
+            if target_broker and target_broker != strategy_broker:
+                continue
+            try:
+                adapter = self.adapter_factory.create(strategy_broker)
+                adapter.login(BrokerCredentials(user=strategy_user, broker=strategy_broker))
+                result = adapter.subscribe(sorted(symbols), user=strategy_user)
+                if self.health_service:
+                    self.health_service.update_health(
+                        strategy_user,
+                        strategy_broker,
+                        websocket_status="connected" if result.get("success") else result.get("status", "unsupported"),
+                        last_error="" if result.get("success") else result.get("message", ""),
+                    )
+                results.append({"user": strategy_user, "broker": strategy_broker, "symbols": sorted(symbols), "result": result})
+            except Exception as exc:
+                if self.health_service:
+                    self.health_service.update_health(
+                        strategy_user,
+                        strategy_broker,
+                        websocket_status="disconnected",
+                        last_error=str(exc),
+                    )
+                results.append({"user": strategy_user, "broker": strategy_broker, "symbols": sorted(symbols), "error": str(exc)})
+        return results
+
+    def _strategy_job_collection(self):
+        return self.db["strategy_jobs"] if self.db is not None else None
+
+    def enqueue_strategy_order(self, payload):
+        jobs = self._strategy_job_collection()
+        if jobs is None:
+            raise RuntimeError("Worker database is not configured")
+        row = dict(payload or {})
+        row.setdefault("status", "pending")
+        row.setdefault("mode", "paper")
+        row.setdefault("created_at", WorkerControlService.now())
+        row.setdefault("updated_at", WorkerControlService.now())
+        result = jobs.insert_one(row)
+        row["_id"] = str(result.inserted_id)
+        return row
+
+    def _next_strategy_job(self):
+        jobs = self._strategy_job_collection()
+        if jobs is None:
+            return None
+        row = jobs.find_one({"status": "pending"})
+        if row:
+            jobs.update_one({"_id": row["_id"]}, {"$set": {"status": "processing", "updated_at": WorkerControlService.now()}})
+        return row
+
+    def _complete_strategy_job(self, job_id, result=None, error=""):
+        jobs = self._strategy_job_collection()
+        if jobs is None:
+            return
+        jobs.update_one(
+            {"_id": job_id},
+            {
+                "$set": {
+                    "status": "failed" if error else "completed",
+                    "result": result or {},
+                    "error": error,
+                    "updated_at": WorkerControlService.now(),
+                }
+            },
+        )
+
+    def process_strategy_jobs(self, limit=25):
+        processed = []
+        for _ in range(limit):
+            job = self._next_strategy_job()
+            if not job:
+                break
+            try:
+                mode = str(job.get("mode") or "paper").lower()
+                broker = "paper" if mode == "paper" else str(job.get("broker") or "")
+                if not broker:
+                    broker_row = self.db["broker"].find_one({"user": job.get("user")}) or {}
+                    broker = broker_row.get("selectedbroker") or "paper"
+                order = BrokerOrder(
+                    user=job["user"],
+                    broker=broker,
+                    symbol=str(job.get("symbol", "")).strip().upper(),
+                    side=str(job.get("side", "BUY")).strip().upper(),
+                    quantity=int(job.get("quantity", 1)),
+                    exchange=str(job.get("exchange", "")),
+                    product_type=str(job.get("product_type", "INTRADAY")),
+                    order_type=str(job.get("order_type", "MARKET")),
+                    price=float(job.get("price", 1) or 1),
+                    strategy_id=str(job.get("strategy_id") or job.get("botcode") or ""),
+                    metadata=dict(job.get("metadata") or job),
+                )
+                adapter = self.adapter_factory.create(broker)
+                adapter.login(BrokerCredentials(user=order.user, broker=broker))
+                result = adapter.place_order(order)
+                self._complete_strategy_job(job["_id"], result=result)
+                processed.append({"job_id": str(job["_id"]), "result": result})
+            except Exception as exc:
+                self._complete_strategy_job(job["_id"], error=str(exc))
+                processed.append({"job_id": str(job["_id"]), "error": str(exc)})
+        return processed
+
+    def handle_command(self, command):
+        name = command.get("command")
+        payload = command.get("payload") or {}
+        if name == "stop":
+            self._stop_event.set()
+            return {"stopping": True}
+        if name in {"relogin", "refresh_brokers"}:
+            return {"brokers": self.refresh_broker_logins(user=payload.get("user"), broker=payload.get("broker"))}
+        if name in {"subscribe", "refresh_subscriptions"}:
+            return {"subscriptions": self.refresh_subscriptions(user=payload.get("user"), broker=payload.get("broker"))}
+        if name in {"run_strategies", "process_strategy_jobs"}:
+            return {"jobs": self.process_strategy_jobs(limit=int(payload.get("limit", 25)))}
+        if name == "place_order":
+            return {"job": self.enqueue_strategy_order(payload)}
+        if name == "start":
+            return {"running": True}
+        return {"ignored": True, "command": name}
+
     def run(self):
-        logging.info("Trading worker started")
+        logger.info("Trading worker started")
         if self.control:
             self.control.heartbeat(state="running")
         while not self._stop_event.is_set():
@@ -36,15 +232,20 @@ class TradingWorker:
                 command = self.control.next_pending()
                 if command:
                     try:
-                        if command.get("command") == "stop":
-                            self.control.complete(command["_id"], {"stopping": True})
-                            self._stop_event.set()
-                            break
-                        self.control.complete(command["_id"], {"ignored": True})
+                        self.control.complete(command["_id"], self.handle_command(command))
                     except Exception as exc:
+                        logger.exception("Worker command failed")
                         self.control.complete(command["_id"], error=str(exc))
-                self.control.heartbeat(state="running")
+                now = time.monotonic()
+                if now - self._last_relogin >= self.relogin_interval_seconds:
+                    self.refresh_broker_logins()
+                    self._last_relogin = now
+                if now - self._last_subscription >= self.subscription_interval_seconds:
+                    self.refresh_subscriptions()
+                    self._last_subscription = now
+                processed = self.process_strategy_jobs()
+                self.control.heartbeat(state="running", processed_jobs=len(processed))
             time.sleep(self.interval_seconds)
         if self.control:
             self.control.heartbeat(state="stopped")
-        logging.info("Trading worker stopped")
+        logger.info("Trading worker stopped")

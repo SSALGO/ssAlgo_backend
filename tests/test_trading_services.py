@@ -7,6 +7,7 @@ from app.domain.brokers.adapters import BrokerAdapterFactory, BrokerCredentials,
 from app.domain.brokers.health import BrokerHealthService
 from app.domain.orders.lifecycle import OrderLifecycleService
 from app.domain.risk.service import RiskControlService
+from app.workers.trading_worker import TradingWorker
 
 
 def test_paper_order_creates_normalized_lifecycle(fake_db):
@@ -227,3 +228,47 @@ def test_angelone_adapter_contract(monkeypatch, fake_db):
         metadata={"symboltoken": "123"},
     ))
     assert result["success"] is True
+
+
+def test_disabled_legacy_adapter_returns_normalized_rejection(fake_db):
+    adapter = BrokerAdapterFactory(
+        db=fake_db,
+        health_service=BrokerHealthService(fake_db),
+        order_lifecycle=OrderLifecycleService(fake_db),
+        risk_service=RiskControlService(fake_db),
+    ).create("delta_exchange_india")
+
+    login_result = adapter.login(BrokerCredentials(user="alice", broker="delta_exchange_india"))
+    order_result = adapter.place_order(BrokerOrder(
+        user="alice",
+        broker="delta_exchange_india",
+        symbol="BTCUSD",
+        side="BUY",
+        quantity=1,
+    ))
+
+    assert login_result["success"] is False
+    assert login_result["status"] == "disabled"
+    assert order_result["success"] is False
+    assert order_result["status"] == "rejected"
+
+
+def test_worker_processes_paper_strategy_job(fake_db):
+    worker = TradingWorker(db=fake_db, interval_seconds=0.01, relogin_interval_seconds=999, subscription_interval_seconds=999)
+    queued = worker.enqueue_strategy_order({
+        "user": "alice",
+        "mode": "paper",
+        "symbol": "NIFTY",
+        "side": "BUY",
+        "quantity": 1,
+        "price": 100,
+        "strategy_id": "S1",
+    })
+
+    processed = worker.process_strategy_jobs()
+    saved_job = fake_db["strategy_jobs"].rows[0]
+    orders = list(fake_db["normalized_orders"].find({"user": "alice"}))
+
+    assert processed[0]["result"]["success"] is True
+    assert saved_job["status"] == "completed"
+    assert orders[0]["status"] == "filled"

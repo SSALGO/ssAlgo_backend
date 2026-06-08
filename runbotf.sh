@@ -1,9 +1,8 @@
 #!/bin/bash
+set -euo pipefail
 
-# Activate the virtual environment
-conda activate trade
-# Run the Python script
-python backend.py
+if [ -f "venv/bin/activate" ]; then
+  . "venv/bin/activate"
+fi
 
-# Pause at the end of the script
-read -p "Press any key to continue..."
+python -m uvicorn fastapi_app:app --host 0.0.0.0 --port 8000

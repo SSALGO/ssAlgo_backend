@@ -1,5 +1,15 @@
 
-import ast
+import logging
+
+from app.core.logging_config import log_print
+from app.core.webhook import parse_webhook_payload
+
+
+logger = logging.getLogger(__name__)
+
+
+def print(*args, **kwargs):
+    log_print(logger, *args, **kwargs)
 
 
 def parse_webhook(webhook_data):
@@ -10,8 +20,7 @@ def parse_webhook(webhook_data):
     :return: Dictionary version of string.
     """
 
-    data = ast.literal_eval(webhook_data)
-    return data
+    return parse_webhook_payload(webhook_data)
 
 
 def calc_price(given_price):
@@ -49,4 +58,3 @@ def send_order(data):
     order = exchange.create_order(data['symbol'], data['type'], data['side'], data['amount'], calc_price(data['price']))
     # This is the last step, the response from the exchange will tell us if it made it and what errors pop up if not.
     print('Exchange Response:', order)
-

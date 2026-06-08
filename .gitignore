@@ -1,0 +1,34 @@
+# Python environments
+venv/
+.venv/
+env/
+
+# Python cache/test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local config and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.yml
+*.yaml
+
+# Runtime logs and generated artifacts
+*.log
+logs/
+dist/
+build/
+*.zip
+__MACOSX/
+
+# Data dumps kept out of source by default
+*.csv
+*.xlsx

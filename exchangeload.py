@@ -11,10 +11,14 @@ from urllib.parse import parse_qs, urlparse
 import pymongo
 import pyotp
 import yaml
-from NorenRestApiPy.NorenApi import NorenApi
+
+try:
+    from NorenRestApiPy.NorenApi import NorenApi
+except ImportError:
+    NorenApi = None
+NorenBase = NorenApi or object
 
 from backend_modules.config import AppConfig
-from connectors.connector import Exchange
 
 
 if sys.platform.startswith("win"):
@@ -42,20 +46,31 @@ def _load_yaml_credentials():
         return yaml.load(handle, Loader=yaml.FullLoader) or {}
 
 
-try:
-    client = pymongo.MongoClient(AppConfig.MONGO_URI, maxPoolSize=100)
-    db = client[AppConfig.MONGO_DB]
-    logging.info("MongoDB connection established")
-except Exception as exc:
-    logging.error("MongoDB connection failed: %s", exc)
-    db = None
+client = None
+db = None
 
 
-cred = _load_yaml_credentials()
+def get_database():
+    global client, db
+    if db is not None:
+        return db
+    try:
+        client = pymongo.MongoClient(AppConfig.MONGO_URI, maxPoolSize=100)
+        db = client[AppConfig.MONGO_DB]
+        logging.info("MongoDB connection established")
+    except Exception as exc:
+        logging.error("MongoDB connection failed: %s", exc)
+        db = None
+    return db
 
 
-class NorenApiPy(NorenApi):
+cred = {}
+
+
+class NorenApiPy(NorenBase):
     def __init__(self):
+        if NorenApi is None:
+            raise ImportError("NorenRestApiPy is required for Shoonya session initialization")
         super().__init__(
             host="https://api.shoonya.com/NorenWClientAPI/",
             websocket="wss://api.shoonya.com/NorenWS/",
@@ -126,6 +141,9 @@ def _resolve_auth_code(user_id):
 
 
 def create_shoonya_session():
+    global cred
+    if not cred:
+        cred = _load_yaml_credentials()
     user_id = os.getenv("SSLAGO_SHOONYA_USER_ID", "").strip() or cred.get("UID", "")
     secret_code = os.getenv("SSLAGO_SHOONYA_SECRET_CODE", "").strip() or cred.get("Secret_Code", "")
 
@@ -205,6 +223,9 @@ trader = DeferredTrader()
 
 if _env_bool("SSLAGO_ENABLE_TRADER_ON_IMPORT", False):
     try:
+        from connectors.connector import Exchange
+
+        get_database()
         api, api1, sessionusertoken = create_shoonya_session()
     except Exception as exc:
         trader.mark_unavailable(exc)

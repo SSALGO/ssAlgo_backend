@@ -113,6 +113,12 @@ warnings.filterwarnings('ignore')
                          "10m": mt5.TIMEFRAME_M10, "15m": mt5.TIMEFRAME_M15,"30m": mt5.TIMEFRAME_M30,
                          "1h": mt5.TIMEFRAME_H1,"4h": mt5.TIMEFRAME_H4, "1D": mt5.TIMEFRAME_D1}'''
 logger = logging.getLogger()
+
+
+def print(*args, **kwargs):
+    from app.core.logging_config import log_print
+
+    log_print(logger, *args, **kwargs)
 from collections import namedtuple
 
 
@@ -8953,7 +8959,20 @@ class Exchange:
         
         ret = None
         
-        if selected_broker == 'shoonya':
+        if selected_broker == 'paper':
+            fill_price = float(trade.get('current_price') or trade.get('optionentry') or trade.get('optionexit') or trade.get('ltp') or 1)
+            ret = {
+                'status': 'success',
+                'broker': 'paper',
+                'message': 'Paper order filled',
+                'order_id': f"paper-{int(time.time() * 1000)}",
+                'transaction_type': transaction_type,
+                'symbol': trade.get('optionname'),
+                'quantity': total_quantity,
+                'fill_price': fill_price,
+            }
+
+        elif selected_broker == 'shoonya':
             shoonya = self._get_broker_session('shoonya', trade['user'], 'Shoonya')
             trans1 = 'S' if transaction_type == 'SELL' else 'B'
             pos1 = 'M' if config.get('positiontype') in ['Future', 'Option'] else 'C'

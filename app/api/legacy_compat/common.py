@@ -39,7 +39,7 @@ from models import (
 
 
 
-BACKEND_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_ROOT = Path(__file__).resolve().parents[3]
 ACTIVE_STRATEGY_STATUSES = {"opened", "paused"}
 PLAN_PRICES = {
     "1 Month": (299900, 30),

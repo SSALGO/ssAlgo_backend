@@ -42,6 +42,54 @@ def test_legacy_login_token_is_real_jwt(monkeypatch):
     assert body["access_token"] == "jwt-for-alice"
 
 
+def test_strategy_form_templates_are_loaded_from_backend_root():
+    from app.api.legacy_compat.common import strategy_forms
+
+    strategy_forms.cache_clear()
+    forms = strategy_forms()
+
+    eqssalgo_fields = forms["add_eqssalgo_form.html"]
+    assert eqssalgo_fields
+    assert any(field.get("name") == "botname" for field in eqssalgo_fields)
+    assert any(field.get("name") == "symbol[]" for field in eqssalgo_fields)
+
+
+def test_user_profile_updates_trading_limits(fake_db, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import fastapi_app
+    from app.api.fastapi_auth import get_current_user
+    from app.api.legacy_compat import common
+
+    user = {
+        "username": "alice",
+        "email": "alice@example.test",
+        "day_profit_limit": "25000",
+        "day_loss_limit": "25000",
+        "trade_limit": "100",
+    }
+    fake_db["users"].insert_one(user)
+    monkeypatch.setattr(common, "get_database", lambda: fake_db)
+    fastapi_app.app.dependency_overrides[get_current_user] = lambda: user
+
+    try:
+        client = TestClient(fastapi_app.app)
+        result = client.post(
+            "/api_user_profile",
+            data={
+                "day_profit_limit": "26000",
+                "day_loss_limit": "24000",
+                "trade_limit": "101",
+            },
+        )
+    finally:
+        fastapi_app.app.dependency_overrides.pop(get_current_user, None)
+
+    assert result.status_code == 200
+    assert result.json()["data"]["day_profit_limit"] == "26000"
+    assert fake_db["users"].find_one({"username": "alice"})["trade_limit"] == "101"
+
+
 def test_worker_control_queue_and_status(fake_db):
     control = WorkerControlService(fake_db)
     queued = control.enqueue("stop", "admin")

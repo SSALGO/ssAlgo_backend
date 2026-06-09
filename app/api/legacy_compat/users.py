@@ -1,8 +1,34 @@
 from app.api.legacy_compat.common import *
 
 
-def api_user_profile(user=Depends(get_current_user)):
+async def api_user_profile(request: Request, user=Depends(get_current_user)):
     username = current_username(user)
+    if request.method == "POST":
+        payload = await payload_from_request(request)
+        limit_fields = ("day_profit_limit", "day_loss_limit", "trade_limit")
+        updates = {}
+        for field_name in limit_fields:
+            if field_name not in payload:
+                continue
+            value = str(form_value(payload, field_name)).strip()
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{field_name} must be a number",
+                )
+            if numeric_value < 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{field_name} cannot be negative",
+                )
+            updates[field_name] = str(int(numeric_value)) if numeric_value.is_integer() else str(numeric_value)
+
+        if updates:
+            collection("users").update_one({"username": username}, {"$set": updates})
+            user = collection("users").find_one({"username": username}) or {**user, **updates}
+
     profile = clean_document(user, hide_password=True) or {}
     profile.pop("_id", None)
     profile.setdefault("day_profit_limit", "25000")

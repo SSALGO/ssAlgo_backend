@@ -647,3 +647,56 @@ def test_broker_reconciliation_smoke_and_positions(fake_db):
     assert isinstance(reconciliation["local_positions"][0]["updated_at"], str)
     assert "broker_smoke_test" in [row["event"] for row in fake_db["audit_logs"].rows]
     assert "broker_position_reconciliation" in [row["event"] for row in fake_db["audit_logs"].rows]
+
+
+def test_broker_connection_test_updates_health(fake_db):
+    class FakeAdapter:
+        def login(self, credentials):
+            return {"success": True}
+
+        def funds(self, user):
+            return {"cash": 1000}
+
+        def positions(self, user):
+            return []
+
+    class FakeFactory:
+        def create(self, broker):
+            return FakeAdapter()
+
+    service = BrokerReconciliationService(
+        fake_db,
+        adapter_factory=FakeFactory(),
+        audit_service=AuditLogService(fake_db),
+    )
+    result = service.connection_test("alice", "dhan")
+    health = fake_db["broker_health"].find_one({"user": "alice", "broker": "dhan"})
+
+    assert result["success"] is True
+    assert result["connection_status"] == "connected"
+    assert result["checks"]["funds"] == "ok"
+    assert health["login_status"] == "connected"
+    assert "broker_connection_test" in [row["event"] for row in fake_db["audit_logs"].rows]
+
+
+def test_broker_connection_test_records_failure(fake_db):
+    class FailingAdapter:
+        def login(self, credentials):
+            return {"success": False, "message": "Invalid credentials"}
+
+    class FakeFactory:
+        def create(self, broker):
+            return FailingAdapter()
+
+    service = BrokerReconciliationService(
+        fake_db,
+        adapter_factory=FakeFactory(),
+        audit_service=AuditLogService(fake_db),
+    )
+    result = service.connection_test("alice", "dhan")
+    health = fake_db["broker_health"].find_one({"user": "alice", "broker": "dhan"})
+
+    assert result["success"] is False
+    assert result["connection_status"] == "failed"
+    assert health["login_status"] == "failed"
+    assert health["last_error"] == "Invalid credentials"

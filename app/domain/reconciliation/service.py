@@ -47,6 +47,78 @@ class BrokerReconciliationService:
         )
         return _jsonable(result)
 
+    def connection_test(self, user: str, broker: str):
+        adapter = self.adapter_factory.create(broker)
+        checks = {"credentials": "present", "login": "pending", "funds": "pending", "positions": "pending"}
+        tested_at = datetime.datetime.now(datetime.UTC)
+        try:
+            login = adapter.login(BrokerCredentials(user=user, broker=broker))
+            if not isinstance(login, dict) or login.get("success") is False:
+                raise RuntimeError((login or {}).get("message") or "Broker login failed")
+            checks["login"] = "connected"
+
+            adapter.funds(user)
+            checks["funds"] = "ok"
+
+            adapter.positions(user)
+            checks["positions"] = "ok"
+
+            result = {
+                "success": True,
+                "broker": broker,
+                "connection_status": "connected",
+                "checks": checks,
+                "tested_at": tested_at,
+            }
+            self.db["broker_health"].update_one(
+                {"user": user, "broker": broker},
+                {
+                    "$set": {
+                        "login_status": "connected",
+                        "last_error": "",
+                        "last_test_at": tested_at,
+                        "updated_at": tested_at,
+                    },
+                    "$setOnInsert": {"user": user, "broker": broker, "created_at": tested_at},
+                },
+                upsert=True,
+            )
+            status = "success"
+        except Exception as exc:
+            checks["login"] = "failed" if checks["login"] == "pending" else checks["login"]
+            result = {
+                "success": False,
+                "broker": broker,
+                "connection_status": "failed",
+                "checks": checks,
+                "message": str(exc),
+                "tested_at": tested_at,
+            }
+            self.db["broker_health"].update_one(
+                {"user": user, "broker": broker},
+                {
+                    "$set": {
+                        "login_status": "failed",
+                        "last_error": str(exc),
+                        "last_test_at": tested_at,
+                        "updated_at": tested_at,
+                    },
+                    "$setOnInsert": {"user": user, "broker": broker, "created_at": tested_at},
+                },
+                upsert=True,
+            )
+            status = "failed"
+
+        self.audit.record(
+            "broker_connection_test",
+            user=user,
+            resource_type="broker",
+            resource_id=broker,
+            status=status,
+            details=result,
+        )
+        return _jsonable(result)
+
     def reconcile_positions(self, user: str, broker: str):
         adapter = self.adapter_factory.create(broker)
         result = {"broker": broker, "user": user, "checked_at": datetime.datetime.now(datetime.UTC)}

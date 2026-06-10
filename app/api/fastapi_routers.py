@@ -27,6 +27,7 @@ from app.domain.audit.service import AuditLogService
 from app.domain.brokers.adapters import BrokerCredentials, BrokerOrder
 from app.domain.brokers.health import SECRET_FIELD_NAMES
 from app.domain.brokers.registry import broker_lookup_ids, broker_payload, normalize_broker_id
+from app.domain.reconciliation.service import BrokerReconciliationService
 from app.realtime.dashboard import DashboardConnectionManager
 from app.workers.control import WorkerControlService
 
@@ -128,6 +129,36 @@ def broker_status(
         else services.health.list_health(username(user))
     )
     return ApiResponse(success=True, message="Broker status fetched", data=data)
+
+
+@broker_router.post("/{broker}/test", response_model=ApiResponse)
+def test_broker_connection(
+    broker: str,
+    user=Depends(get_current_user),
+    services: FastAPITradingServices = Depends(get_trading_services),
+):
+    broker = normalize_broker_id(broker)
+    registry = broker_payload().get("broker_status", {}).get(broker, {})
+    if not registry:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown broker")
+    if registry.get("enabled") is False:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{broker} is not enabled for trading yet")
+    missing = services.health.missing_credentials(username(user), broker)
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": "Broker credentials are incomplete", "missing_credentials": missing},
+        )
+    result = BrokerReconciliationService(
+        services.db,
+        adapter_factory=services.adapter_factory,
+        audit_service=services.audit,
+    ).connection_test(username(user), broker)
+    return ApiResponse(
+        success=bool(result.get("success")),
+        message="Broker connection test completed",
+        data=result,
+    )
 
 
 @broker_router.post("/{broker}/credentials", response_model=ApiResponse)

@@ -90,6 +90,34 @@ def test_user_profile_updates_trading_limits(fake_db, monkeypatch):
     assert fake_db["users"].find_one({"username": "alice"})["trade_limit"] == "101"
 
 
+def test_legacy_dashboard_uses_active_broker_health_for_connection_status(fake_db, monkeypatch):
+    from app.api.legacy_compat import dashboard
+
+    fake_db["subscriptionperiod"].insert_one({"user": "alice", "end": "2099-12-31"})
+    fake_db["broker"].insert_one({"user": "alice", "selectedbroker": "aliceblue"})
+    fake_db["broker_health"].insert_one({
+        "user": "alice",
+        "broker": "aliceblue",
+        "login_status": "connected",
+    })
+    monkeypatch.setattr(dashboard, "get_database", lambda: fake_db)
+
+    connected = dashboard.api_index(user={"username": "alice", "admin": False})
+
+    assert connected.data["userlog"] is True
+    assert connected.data["broker"] == "aliceblue"
+    assert connected.data["broker_health"]["login_status"] == "connected"
+
+    fake_db["broker_health"].update_one(
+        {"user": "alice", "broker": "aliceblue"},
+        {"$set": {"login_status": "disconnected"}},
+    )
+    disconnected = dashboard.api_index(user={"username": "alice", "admin": False})
+
+    assert disconnected.data["userlog"] is False
+    assert disconnected.data["broker_health"]["login_status"] == "disconnected"
+
+
 def test_worker_control_queue_and_status(fake_db):
     control = WorkerControlService(fake_db)
     queued = control.enqueue("stop", "admin")

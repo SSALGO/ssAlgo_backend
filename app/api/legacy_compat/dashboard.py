@@ -1,4 +1,5 @@
 from app.api.legacy_compat.common import *
+from app.domain.brokers.health import BrokerHealthService
 
 
 async def api_searchsymbol(request: Request, query: str = Query("", min_length=0)):
@@ -34,6 +35,9 @@ async def api_searchsymbol(request: Request, query: str = Query("", min_length=0
 def api_index(user=Depends(get_current_user)):
     db = get_database()
     username = current_username(user)
+    broker_health = BrokerHealthService(db)
+    active_broker = broker_health.active_broker(username)
+    active_broker_health = broker_health.get_health(username, active_broker)
     sub = db["subscriptionperiod"].find_one({"user": username})
     if not sub:
         ensure_free_subscription(username)
@@ -76,7 +80,9 @@ def api_index(user=Depends(get_current_user)):
         "strategy": strategies,
         "opositions": open_positions,
         "fixed": False,
-        "userlog": False,
+        "userlog": active_broker_health.get("login_status") == "connected",
+        "broker": active_broker,
+        "broker_health": active_broker_health,
         "user_subscription": active_subscription,
         "user_expiry": sub.get("end"),
         "adminuser": bool(user.get("admin")),

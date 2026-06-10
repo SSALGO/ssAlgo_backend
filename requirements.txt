@@ -37,6 +37,7 @@ geocoder==1.38.1
 Ant-A3-tradehub-sdk-production==1.1.7
 NorenRestApiPy==0.0.22
 rel==0.4.9.26
+setuptools==80.9.0
 websocket-client==1.9.0
 
 # Optional browser-based Shoonya OAuth automation.

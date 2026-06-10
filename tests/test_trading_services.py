@@ -1,9 +1,13 @@
 import datetime
+import builtins
 import sys
 import types
 
+import pytest
+
 from app.domain.backtesting.service import BacktestService
 from app.domain.brokers.adapters import BrokerAdapterFactory, BrokerCredentials, BrokerOrder
+from app.domain.brokers.adapters.aliceblue import load_trade_hub
 from app.domain.brokers.health import BrokerHealthService
 from app.domain.audit.service import AuditLogService
 from app.domain.orders.lifecycle import OrderLifecycleService
@@ -12,6 +16,20 @@ from app.domain.reconciliation.service import BrokerReconciliationService
 from app.domain.risk.service import RiskControlService
 from app.workers.trading_worker import TradingWorker
 from app.core.secrets import decrypt_secret, encrypt_secret
+
+
+def test_aliceblue_sdk_import_reports_nested_missing_dependency(monkeypatch):
+    original_import = builtins.__import__
+
+    def fail_sdk_import(name, *args, **kwargs):
+        if name == "TradeMaster.TradeSync":
+            raise ModuleNotFoundError("No module named 'setuptools'", name="setuptools")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_sdk_import)
+
+    with pytest.raises(ImportError, match="Python module 'setuptools' is missing"):
+        load_trade_hub()
 
 
 def test_paper_order_creates_normalized_lifecycle(fake_db):
@@ -135,7 +153,8 @@ def test_broker_health_uses_legacy_selected_broker_from_apis(fake_db):
     assert health.active_broker("alice") == "dhan"
     assert status["active"] is True
     assert status["missing_credentials"] == []
-    assert status["login_status"] == "unknown"
+    assert status["login_status"] == "not_tested"
+    assert status["websocket_status"] == "not_tested"
 
 
 def test_broker_health_falls_back_to_first_saved_api_broker(fake_db):

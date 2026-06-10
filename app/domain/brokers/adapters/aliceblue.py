@@ -4,6 +4,20 @@ import io
 from .live_base import NormalizedLiveBrokerAdapter
 
 
+def load_trade_hub():
+    try:
+        from TradeMaster.TradeSync import TradeHub
+    except ModuleNotFoundError as exc:
+        missing_module = exc.name or "unknown"
+        raise ImportError(
+            f"AliceBlue SDK could not load because Python module '{missing_module}' is missing. "
+            "Reinstall the backend requirements and redeploy."
+        ) from exc
+    except ImportError as exc:
+        raise ImportError(f"AliceBlue SDK could not load: {exc}") from exc
+    return TradeHub
+
+
 class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
     broker_name = "aliceblue"
 
@@ -26,11 +40,8 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
         session_id = str(values.get("user_session") or values.get("sessionID") or "").strip() or None
         if not user_id or not secret_key or not (auth_code or session_id):
             raise ValueError("AliceBlue requires apikey, apisecret, and auth_code or sessionID")
-        try:
-            from TradeMaster.TradeSync import TradeHub
-        except ImportError as exc:
-            raise ImportError("Ant-A3 TradeMaster SDK is required for AliceBlue live trading") from exc
 
+        TradeHub = load_trade_hub()
         self.client = TradeHub(user_id=user_id, auth_code=auth_code, secret_key=secret_key, session_id=session_id)
         with contextlib.redirect_stdout(io.StringIO()):
             response = self.client.get_session_id(session_id=session_id) if session_id else self.client.get_session_id()

@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, Request
+from pydantic import ValidationError
 
 from app.api.fastapi_auth import require_admin
-from app.api.fastapi_schemas import ApiResponse
+from app.api.fastapi_schemas import ApiResponse, WorkerOrderRequest
+from app.domain.audit.service import AuditLogService
 from app.api.fastapi_services import FastAPITradingServices, get_trading_services
 from app.workers.control import WorkerControlService
 
@@ -53,5 +55,20 @@ async def worker_command(
     else:
         form = await request.form()
         payload = {key: value for key, value in form.items()}
+    if command == "place_order":
+        try:
+            payload = WorkerOrderRequest(**payload).model_dump()
+        except ValidationError as exc:
+            from fastapi import HTTPException, status
+
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.errors())
     queued = control.enqueue(command, _admin["username"], payload=payload)
+    AuditLogService(control.db).record(
+        "worker_command_queued",
+        user=str(payload.get("user") or ""),
+        actor=_admin["username"],
+        resource_type="worker_command",
+        resource_id=queued.get("_id"),
+        details={"command": command},
+    )
     return ApiResponse(success=True, message="Worker command queued", data=queued)

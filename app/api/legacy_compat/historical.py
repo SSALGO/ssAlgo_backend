@@ -21,7 +21,7 @@ def api_mainhistoricalbacktest(
     start_date: str = Query("", alias="start_date"),
     date: str = Query("", alias="date"),
     end_date: str = Query(""),
-    _user=Depends(get_current_user),
+    _admin=Depends(require_admin),
 ):
     selected_start, selected_end, start_ts, end_ts = parse_date_range(start_date or date, end_date)
     history = historical_rows("kinguniverse129", start_ts, end_ts)

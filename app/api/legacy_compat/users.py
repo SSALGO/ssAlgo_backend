@@ -1,4 +1,14 @@
 from app.api.legacy_compat.common import *
+from app.domain.auth.reset_service import (
+    MAX_OTP_ATTEMPTS,
+    create_otp,
+    create_reset_token,
+    hash_password,
+    hash_token,
+    verify_otp_hash,
+    verify_reset_token,
+)
+from app.domain.auth.notifications import send_security_email
 
 
 async def api_user_profile(request: Request, user=Depends(get_current_user)):
@@ -78,16 +88,44 @@ async def api_forgot_reset_password(request: Request):
     if not email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is required.")
     user = collection("users").find_one({"email": email})
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No user found with that email address.")
-    reset_token = user.get("reset_token") or secrets.token_urlsafe(32)
-    collection("users").update_one({"_id": user["_id"]}, {"$set": {"reset_token": reset_token}})
-    return response("Password reset token created.", {"reset_token": reset_token})
+    if user:
+        reset_token, reset_hash, expiration = create_reset_token()
+        collection("users").update_one(
+            {"_id": user["_id"]},
+            {
+                "$set": {
+                    "reset_token_hash": reset_hash,
+                    "reset_token_expiration": expiration,
+                    "reset_token_used": False,
+                    "reset_requested_at": datetime.datetime.utcnow(),
+                },
+                "$unset": {"reset_token": ""},
+            },
+        )
+        collection("security_audit").insert_one({
+            "user": user.get("username"),
+            "email": email,
+            "event": "password_reset_requested",
+            "created_at": datetime.datetime.utcnow(),
+        })
+        audit_event("password_reset_requested", user=user.get("username"), resource_type="user", resource_id=user.get("username"))
+        sent = send_security_email(
+            email,
+            "ssAlgo password reset",
+            f"Use this password reset token within 30 minutes: {reset_token}",
+        )
+        collection("security_audit").insert_one({
+            "user": user.get("username"),
+            "email": email,
+            "event": "password_reset_email_sent" if sent else "password_reset_email_not_configured",
+            "created_at": datetime.datetime.utcnow(),
+        })
+    return response("If the email exists, password reset instructions have been sent.")
 
 
 async def api_reset_password(reset_token: str, request: Request):
-    user = collection("users").find_one({"reset_token": reset_token})
-    if not user:
+    user = collection("users").find_one({"reset_token_hash": hash_token(reset_token)})
+    if not verify_reset_token(user, reset_token):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token.")
     if request.method == "GET":
         return response("Reset token is valid. You can now reset your password.")
@@ -96,12 +134,26 @@ async def api_reset_password(reset_token: str, request: Request):
     confirm_password = form_value(payload, "confirm_password")
     if not new_password or new_password != confirm_password:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Passwords do not match.")
-    import bcrypt
-
+    try:
+        password_hash = hash_password(new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     collection("users").update_one(
         {"_id": user["_id"]},
-        {"$set": {"password": bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()), "reset_token": None}},
+        {
+            "$set": {
+                "password": password_hash,
+                "reset_token_used": True,
+                "password_reset_at": datetime.datetime.utcnow(),
+            },
+            "$unset": {
+                "reset_token": "",
+                "reset_token_hash": "",
+                "reset_token_expiration": "",
+            },
+        },
     )
+    audit_event("otp_password_reset_completed", user=user.get("username"), resource_type="user", resource_id=user.get("username"))
     return response("Your password has been successfully reset. You can now log in with your new password.")
 
 
@@ -109,22 +161,52 @@ async def api_forgot_otp_reset_password(request: Request):
     payload = await payload_from_request(request)
     email = str(form_value(payload, "email")).lower()
     user = collection("users").find_one({"email": email})
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No user found with that email address.")
-    otp = secrets.randbelow(900000) + 100000
-    expiration = datetime.datetime.utcnow() + datetime.timedelta(minutes=10)
-    collection("users").update_one({"_id": user["_id"]}, {"$set": {"otp": otp, "otp_expiration": expiration}})
-    return response("OTP created.", {"otp": otp, "expires_at": expiration.isoformat()})
+    if user:
+        otp, otp_hash, expiration = create_otp()
+        collection("users").update_one(
+            {"_id": user["_id"]},
+            {
+                "$set": {
+                    "otp_hash": otp_hash,
+                    "otp_expiration": expiration,
+                    "otp_attempts": 0,
+                    "otp_requested_at": datetime.datetime.utcnow(),
+                },
+                "$unset": {"otp": ""},
+            },
+        )
+        collection("security_audit").insert_one({
+            "user": user.get("username"),
+            "email": email,
+            "event": "otp_reset_requested",
+            "created_at": datetime.datetime.utcnow(),
+        })
+        audit_event("otp_reset_requested", user=user.get("username"), resource_type="user", resource_id=user.get("username"))
+        sent = send_security_email(
+            email,
+            "ssAlgo password reset OTP",
+            f"Use this OTP within 10 minutes: {otp}",
+        )
+        collection("security_audit").insert_one({
+            "user": user.get("username"),
+            "email": email,
+            "event": "otp_reset_email_sent" if sent else "otp_reset_email_not_configured",
+            "created_at": datetime.datetime.utcnow(),
+        })
+    return response("If the email exists, OTP reset instructions have been sent.")
 
 
 def verify_otp(email, otp):
     user = collection("users").find_one({"email": str(email).lower()})
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No user found with that email address.")
-    if str(user.get("otp")) != str(otp):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP.")
-    if user.get("otp_expiration") and user["otp_expiration"] < datetime.datetime.utcnow():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired.")
+    ok, message = verify_otp_hash(user, otp)
+    if not ok:
+        update = {"$set": {"last_otp_failure_at": datetime.datetime.utcnow()}}
+        if int(user.get("otp_attempts") or 0) < MAX_OTP_ATTEMPTS:
+            update["$inc"] = {"otp_attempts": 1}
+        collection("users").update_one({"_id": user["_id"]}, update)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
     return user
 
 
@@ -141,12 +223,18 @@ async def api_otp_reset_password(request: Request):
     confirm_password = form_value(payload, "confirm_password")
     if not new_password or new_password != confirm_password:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Passwords do not match.")
-    import bcrypt
-
+    try:
+        password_hash = hash_password(new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     collection("users").update_one(
         {"_id": user["_id"]},
-        {"$set": {"password": bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()), "otp": None, "otp_expiration": None}},
+        {
+            "$set": {"password": password_hash, "password_reset_at": datetime.datetime.utcnow()},
+            "$unset": {"otp": "", "otp_hash": "", "otp_expiration": "", "otp_attempts": ""},
+        },
     )
+    audit_event("password_reset_completed", user=user.get("username"), resource_type="user", resource_id=user.get("username"))
     return response("Your password has been successfully reset. You can now log in with your new password.")
 
 

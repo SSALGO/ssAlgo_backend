@@ -46,6 +46,22 @@ class BrokerHealthService:
     def required_fields(self, broker):
         return [field["id"] for field in BROKER_REQUIREMENTS.get(broker, [])]
 
+    def active_broker(self, username):
+        broker_row = self.broker_collection.find_one({"user": username}) or {}
+        selected = broker_row.get("selectedbroker") or broker_row.get("selected_broker")
+        if selected:
+            return selected
+
+        legacy_selected = self.apis_collection.find_one(
+            {"user": username, "selected_broker": {"$exists": True, "$ne": ""}}
+        ) or {}
+        selected = legacy_selected.get("selected_broker") or legacy_selected.get("selectedbroker")
+        if selected:
+            return selected
+
+        api_row = self.apis_collection.find_one({"user": username, "broker": {"$exists": True, "$ne": ""}}) or {}
+        return api_row.get("broker") or "paper"
+
     def missing_credentials(self, username, broker):
         if broker == "paper":
             return []
@@ -82,7 +98,7 @@ class BrokerHealthService:
         row = self.health_collection.find_one({"user": username, "broker": broker}) or {}
         missing = self.missing_credentials(username, broker)
         registry_status = BROKER_STATUS.get(broker, {})
-        active = (self.broker_collection.find_one({"user": username}) or {}).get("selectedbroker")
+        active = self.active_broker(username)
         status = dict(row)
         status.update(
             {

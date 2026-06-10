@@ -22,6 +22,8 @@ from app.api.fastapi_schemas import (
 )
 from app.api.fastapi_services import FastAPITradingServices, get_trading_services
 from app.core.database import get_database
+from app.core.secrets import encrypt_secret_fields
+from app.domain.audit.service import AuditLogService
 from app.domain.brokers.adapters import BrokerCredentials, BrokerOrder
 from app.domain.brokers.health import SECRET_FIELD_NAMES
 from app.domain.brokers.registry import broker_payload
@@ -103,10 +105,12 @@ def logout(_user=Depends(get_current_user)):
 
 
 @broker_router.get("", response_model=ApiResponse)
-def list_brokers(user=Depends(get_current_user)):
+def list_brokers(
+    user=Depends(get_current_user),
+    services: FastAPITradingServices = Depends(get_trading_services),
+):
     payload = broker_payload()
-    broker_data = get_database()["broker"].find_one({"user": username(user)}) or {}
-    payload["current_broker"] = broker_data.get("selectedbroker", "paper")
+    payload["current_broker"] = services.health.active_broker(username(user))
     return ApiResponse(success=True, message="Brokers fetched", data=payload)
 
 
@@ -141,6 +145,7 @@ def save_broker_credentials(
             values.pop(field_name)
     values["user"] = username(user)
     values["broker"] = broker
+    values = encrypt_secret_fields(values, SECRET_FIELD_NAMES)
     result = db["apis"].update_one(
         {"user": username(user), "broker": broker},
         {"$set": values},
@@ -152,6 +157,13 @@ def save_broker_credentials(
             {"$set": {"user": username(user), "selectedbroker": broker}},
             upsert=True,
         )
+    AuditLogService(db).record(
+        "broker_credentials_saved",
+        user=username(user),
+        resource_type="broker_api",
+        resource_id=broker,
+        details={"broker": broker, "activated": payload.activate},
+    )
     return ApiResponse(
         success=True,
         message="Broker credentials saved",
@@ -187,10 +199,10 @@ def place_paper_order(
     order = BrokerOrder(
         user=username(user),
         broker="paper",
-        symbol=payload.symbol.strip().upper(),
-        side=payload.side.strip().upper(),
+        symbol=payload.symbol,
+        side=payload.side,
         quantity=payload.quantity,
-        order_type=payload.order_type.strip().upper(),
+        order_type=payload.order_type,
         price=payload.price,
         strategy_id=payload.strategy_id,
         metadata=payload.metadata,
@@ -217,10 +229,10 @@ def list_orders(
 @order_router.get("/{order_id}", response_model=ApiResponse)
 def get_order(
     order_id: str,
-    _user=Depends(get_current_user),
+    user=Depends(get_current_user),
     services: FastAPITradingServices = Depends(get_trading_services),
 ):
-    data = services.order_lifecycle.get_order(order_id)
+    data = services.order_lifecycle.get_order_for_user(order_id, username(user))
     if not data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     return ApiResponse(success=True, message="Order fetched", data=data)
@@ -233,7 +245,15 @@ def transition_order(
     user=Depends(get_current_user),
     services: FastAPITradingServices = Depends(get_trading_services),
 ):
-    data = services.order_lifecycle.transition(order_id, payload.status, {"source": "fastapi", "user": username(user), **payload.data})
+    try:
+        data = services.order_lifecycle.transition_for_user(
+            order_id,
+            payload.status,
+            username(user),
+            {"source": "fastapi", "user": username(user), **payload.data},
+        )
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     return ApiResponse(success=True, message="Order transitioned", data=data)
 
 
@@ -312,13 +332,19 @@ async def legacy_order_lifecycle(
     payload = await legacy_payload(request)
     operation = payload.get("operation", "list")
     if operation == "get":
-        data = services.order_lifecycle.get_order(payload.get("order_id", ""))
+        data = services.order_lifecycle.get_order_for_user(payload.get("order_id", ""), username(user))
+        if not data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     elif operation == "transition":
-        data = services.order_lifecycle.transition(
-            payload.get("order_id", ""),
-            payload.get("status", ""),
-            {"source": "fastapi_legacy_alias", "user": username(user)},
-        )
+        try:
+            data = services.order_lifecycle.transition_for_user(
+                payload.get("order_id", ""),
+                payload.get("status", ""),
+                username(user),
+                {"source": "fastapi_legacy_alias", "user": username(user)},
+            )
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     else:
         data = services.order_lifecycle.list_orders(
             username(user),

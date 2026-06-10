@@ -12,6 +12,7 @@ from app.api.fastapi_routers import (
 )
 from app.api.legacy_bridge import migration_router
 from app.api.native_legacy_routes import native_legacy_router
+from app.api.ops_routes import ops_router
 from app.api.worker_routes import worker_router
 from app.core.config import AppConfig
 from app.core.database import get_database
@@ -45,6 +46,7 @@ app.include_router(paper_router)
 app.include_router(order_router)
 app.include_router(backtest_router)
 app.include_router(worker_router)
+app.include_router(ops_router)
 app.include_router(legacy_router)
 app.include_router(native_legacy_router)
 app.include_router(ws_router)

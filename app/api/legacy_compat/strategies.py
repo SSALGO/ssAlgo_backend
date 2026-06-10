@@ -100,6 +100,7 @@ def make_add_strategy_endpoint(kind, message):
         payload = await payload_from_request(request)
         doc = build_strategy(kind, payload, user)
         inserted_id = collection("strategies").insert_one(doc).inserted_id
+        audit_event("strategy_created", user=current_username(user), resource_type="strategy", resource_id=doc.get("botcode"), details={"kind": kind})
         return response(message, {"id": str(inserted_id), "botcode": doc.get("botcode")})
 
     endpoint.__name__ = f"add_{kind}_strategy"
@@ -127,6 +128,14 @@ def make_edit_strategy_endpoint(kind, message, *, admin=False):
         result = collection("strategies").update_one(query, update)
         if result.matched_count == 0:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+        audit_event(
+            "strategy_updated",
+            user=existing.get("user") or current_username(user),
+            resource_type="strategy",
+            resource_id=botcode,
+            actor=current_username(user),
+            details={"kind": kind, "admin": admin},
+        )
         return response(message, {"botcode": botcode})
 
     endpoint.__name__ = f"{'admin_' if admin else ''}edit_{kind}_strategy"
@@ -143,6 +152,7 @@ async def api_stop_ssalgo(request: Request, user=Depends(get_current_user)):
     mark_strategy_positions_exit(botcode, current_username(user))
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    audit_event("strategy_paused", user=current_username(user), resource_type="strategy", resource_id=botcode)
     return response("Successfully Stop SSALGO Strategy")
 
 
@@ -155,6 +165,7 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    audit_event("strategy_started", user=current_username(user), resource_type="strategy", resource_id=botcode)
     return response("Successfully started SSALGO strategy")
 
 
@@ -165,6 +176,7 @@ async def api_stop_admin_ssalgo(request: Request, _admin=Depends(require_admin))
     mark_strategy_positions_exit(botcode)
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    audit_event("strategy_admin_paused", resource_type="strategy", resource_id=botcode, actor=_admin.get("username"))
     return response("Successfully stopped SSALGO strategy")
 
 
@@ -177,6 +189,7 @@ async def api_start_admin_ssalgo(request: Request, _admin=Depends(require_admin)
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    audit_event("strategy_admin_started", resource_type="strategy", resource_id=botcode, actor=_admin.get("username"))
     return response("Successfully started SSALGO strategy")
 
 
@@ -187,6 +200,7 @@ async def api_delete_admin_ssalgo(request: Request, _admin=Depends(require_admin
     mark_strategy_positions_exit(botcode)
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found.")
+    audit_event("strategy_admin_closed", resource_type="strategy", resource_id=botcode, actor=_admin.get("username"))
     return response("Successfully closed the strategy.")
 
 
@@ -200,6 +214,7 @@ async def api_delete_strategy(request: Request, user=Depends(get_current_user)):
     mark_strategy_positions_exit(botcode, current_username(user))
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found or you do not have permission to close it.")
+    audit_event("strategy_closed", user=current_username(user), resource_type="strategy", resource_id=botcode)
     return response("Successfully closed the strategy.")
 
 

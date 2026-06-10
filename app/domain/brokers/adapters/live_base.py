@@ -1,4 +1,6 @@
 from .base import BrokerAdapter
+from app.core.secrets import decrypt_secret_fields
+from app.domain.brokers.health import SECRET_FIELD_NAMES
 
 
 class NormalizedLiveBrokerAdapter(BrokerAdapter):
@@ -25,6 +27,7 @@ class NormalizedLiveBrokerAdapter(BrokerAdapter):
         if self.db is not None:
             saved = self.db["apis"].find_one({"user": credentials.user, "broker": self.broker_name}) or {}
             values = {**saved, **values}
+        values = decrypt_secret_fields(values, SECRET_FIELD_NAMES)
         self.credentials = values
         return values
 

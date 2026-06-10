@@ -28,6 +28,13 @@ class WorkerControlService:
         return row
 
     def next_pending(self):
+        if hasattr(self.commands, "find_one_and_update"):
+            row = self.commands.find_one_and_update(
+                {"status": "pending"},
+                {"$set": {"status": "processing", "updated_at": self.now()}},
+            )
+            if row:
+                return row
         row = self.commands.find_one({"status": "pending"})
         if not row:
             return None

@@ -23,7 +23,8 @@ async def api_update_api(request: Request, _admin=Depends(require_admin)):
     }
     if "auth_code" in payload:
         data["auth_code"] = form_value(payload, "auth_code")
-    collection("apis").update_one({"_id": object_id(api_id)}, {"$set": data})
+    collection("apis").update_one({"_id": object_id(api_id)}, {"$set": encrypted_secret_update(data)})
+    audit_event("broker_credentials_admin_updated", user=data.get("user"), resource_type="broker_api", resource_id=api_id, actor=_admin.get("username"))
     return response("Fetched Successfully Updated API")
 
 
@@ -32,7 +33,8 @@ async def api_add_apikey(request: Request, user=Depends(get_current_user)):
     data = flat_form(payload)
     data["user"] = current_username(user)
     data.pop("token", None)
-    inserted_id = collection("apis").insert_one(data).inserted_id
+    inserted_id = collection("apis").insert_one(encrypted_secret_update(data)).inserted_id
+    audit_event("broker_credentials_created", user=current_username(user), resource_type="broker_api", resource_id=inserted_id, details={"broker": data.get("broker")})
     return response("API key added successfully", {"id": str(inserted_id)})
 
 
@@ -42,8 +44,11 @@ async def api_edit_apikey(request: Request, user=Depends(get_current_user)):
     data["user"] = current_username(user)
     api_id = data.pop("id", "")
     data.pop("token", None)
-    query = {"_id": object_id(api_id)} if api_id else {"user": current_username(user), "broker": data.get("broker")}
-    result = collection("apis").update_one(query, {"$set": data}, upsert=not api_id)
+    query = {"_id": object_id(api_id), "user": current_username(user)} if api_id else {"user": current_username(user), "broker": data.get("broker")}
+    result = collection("apis").update_one(query, {"$set": encrypted_secret_update(data)}, upsert=not api_id)
+    if api_id and result.matched_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API not found")
+    audit_event("broker_credentials_updated", user=current_username(user), resource_type="broker_api", resource_id=api_id or result.upserted_id, details={"broker": data.get("broker")})
     return response("API key updated successfully", {
         "matched": result.matched_count,
         "modified": result.modified_count,
@@ -68,8 +73,9 @@ async def api_multi_api(request: Request, user=Depends(get_current_user)):
         data["user"] = current_username(user)
         data.pop("token", None)
         data.pop("operation", None)
-        result = collection("apis").update_one(query, {"$set": data}, upsert=True)
+        result = collection("apis").update_one(query, {"$set": encrypted_secret_update(data)}, upsert=True)
         message = "Successfully Created API" if result.upserted_id else "Successfully Updated API"
+        audit_event("broker_credentials_updated", user=current_username(user), resource_type="broker_api", resource_id=result.upserted_id or broker, details={"broker": broker, "operation": operation})
         return response(message, {
             "matched": result.matched_count,
             "modified": result.modified_count,

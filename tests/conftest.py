@@ -101,6 +101,17 @@ class FakeCollection:
                 return FakeDeleteResult(1)
         return FakeDeleteResult()
 
+    def delete_many(self, query):
+        deleted = 0
+        remaining = []
+        for row in self.rows:
+            if self._matches(row, query):
+                deleted += 1
+            else:
+                remaining.append(row)
+        self.rows = remaining
+        return FakeDeleteResult(deleted)
+
     @staticmethod
     def _matches(row, query):
         for key, expected in query.items():
@@ -113,6 +124,8 @@ class FakeCollection:
                 if "$in" in expected and value not in expected["$in"]:
                     return False
                 if "$ne" in expected and not (value != expected["$ne"]):
+                    return False
+                if "$lt" in expected and not (value < expected["$lt"]):
                     return False
             elif key == "$or":
                 if not any(FakeCollection._matches(row, item) for item in expected):

@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ApiResponse(BaseModel):
@@ -30,13 +30,62 @@ class BrokerCredentialsRequest(BaseModel):
 
 
 class PaperOrderRequest(BaseModel):
-    symbol: str
+    symbol: str = Field(min_length=1)
     side: str = "BUY"
-    quantity: int = 1
+    quantity: int = Field(default=1, ge=1)
     order_type: str = "MARKET"
-    price: float = 1
+    price: float = Field(default=1, gt=0)
     strategy_id: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("symbol", "side", "order_type", mode="before")
+    @classmethod
+    def normalize_text(cls, value):
+        return str(value or "").strip().upper()
+
+    @field_validator("side")
+    @classmethod
+    def validate_side(cls, value):
+        if value not in {"BUY", "SELL"}:
+            raise ValueError("side must be BUY or SELL")
+        return value
+
+    @field_validator("order_type")
+    @classmethod
+    def validate_order_type(cls, value):
+        if value not in {"MARKET", "LIMIT", "SL", "SL-M"}:
+            raise ValueError("unsupported order type")
+        return value
+
+
+class WorkerOrderRequest(PaperOrderRequest):
+    user: str = Field(min_length=1)
+    broker: str = ""
+    mode: str = "paper"
+    exchange: str = ""
+    product_type: str = "INTRADAY"
+    idempotency_key: Optional[str] = None
+
+    @field_validator("user", "broker", "mode", "exchange", "product_type", mode="before")
+    @classmethod
+    def normalize_worker_text(cls, value):
+        return str(value or "").strip()
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, value):
+        value = value.lower()
+        if value not in {"paper", "live"}:
+            raise ValueError("mode must be paper or live")
+        return value
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_live_idempotency(cls, value, info):
+        mode = str(info.data.get("mode") or "paper").lower()
+        if mode == "live" and not str(value or "").strip():
+            raise ValueError("idempotency_key is required for live orders")
+        return value
 
 
 class OrderTransitionRequest(BaseModel):

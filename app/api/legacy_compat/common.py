@@ -16,6 +16,8 @@ from app.api.fastapi_auth import create_compatible_access_token, ensure_free_sub
 from app.api.fastapi_schemas import ApiResponse
 from app.core.config import AppConfig
 from app.core.database import get_database
+from app.core.secrets import encrypt_secret_fields
+from app.domain.audit.service import AuditLogService
 from app.domain.brokers.health import SECRET_FIELD_NAMES
 from app.domain.brokers.registry import broker_payload
 from models import (
@@ -114,6 +116,18 @@ def response(message, data=None, success=True):
     return ApiResponse(success=success, message=message, data=data)
 
 
+def audit_event(event, user="", resource_type="", resource_id="", status_text="success", details=None, actor=""):
+    return AuditLogService(get_database()).record(
+        event,
+        user=user,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        status=status_text,
+        details=details or {},
+        actor=actor,
+    )
+
+
 def object_id(value, field_name="id"):
     if not ObjectId.is_valid(str(value or "")):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid {field_name} format")
@@ -206,6 +220,10 @@ def flat_form(payload):
         else:
             flattened[key] = str(value)
     return flattened
+
+
+def encrypted_secret_update(data):
+    return encrypt_secret_fields(data, SECRET_FIELD_NAMES)
 
 
 def active_strategy_units(username):

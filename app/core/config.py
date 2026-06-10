@@ -1,15 +1,36 @@
 import datetime
 import os
 import secrets
+from pathlib import Path
 
 
 def _csv_env(name, default=''):
     return [item.strip() for item in os.getenv(name, default).split(',') if item.strip()]
 
 
+def _load_local_env():
+    env_path = Path(__file__).resolve().parents[2] / '.env'
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding='utf-8').splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_local_env()
+
+
 class AppConfig:
+    ENVIRONMENT = os.getenv('SSLAGO_ENVIRONMENT', 'development').lower()
     JWT_SECRET_KEY = os.getenv('SSLAGO_JWT_SECRET_KEY') or secrets.token_urlsafe(48)
     FLASK_SECRET_KEY = os.getenv('SSLAGO_FLASK_SECRET_KEY') or secrets.token_urlsafe(48)
+    CREDENTIAL_ENCRYPTION_KEY = os.getenv('SSLAGO_CREDENTIAL_ENCRYPTION_KEY', '')
     JWT_ACCESS_TOKEN_EXPIRES = datetime.timedelta(
         hours=int(os.getenv('SSLAGO_JWT_EXPIRES_HOURS', '12'))
     )

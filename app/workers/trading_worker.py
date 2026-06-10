@@ -4,9 +4,11 @@ import time
 
 from app.domain.brokers.adapters import BrokerAdapterFactory, BrokerCredentials, BrokerOrder
 from app.domain.brokers.health import BrokerHealthService
+from app.domain.audit.service import AuditLogService
 from app.domain.orders.lifecycle import OrderLifecycleService
 from app.domain.risk.service import RiskControlService
 from app.workers.control import WorkerControlService
+from app.api.fastapi_schemas import WorkerOrderRequest
 
 
 logger = logging.getLogger(__name__)
@@ -17,8 +19,9 @@ class TradingWorker:
 
     def __init__(self, health_service=None, db=None, interval_seconds=1, relogin_interval_seconds=60, subscription_interval_seconds=30):
         self.db = db
+        self.audit = AuditLogService(db) if db is not None else None
         self.health_service = health_service or (BrokerHealthService(db) if db is not None else None)
-        self.order_lifecycle = OrderLifecycleService(db) if db is not None else None
+        self.order_lifecycle = OrderLifecycleService(db, audit_service=self.audit) if db is not None else None
         self.risk_service = RiskControlService(db)
         self.adapter_factory = BrokerAdapterFactory(
             db=db,
@@ -136,19 +139,32 @@ class TradingWorker:
         jobs = self._strategy_job_collection()
         if jobs is None:
             raise RuntimeError("Worker database is not configured")
-        row = dict(payload or {})
+        row = WorkerOrderRequest(**(payload or {})).model_dump()
         row.setdefault("status", "pending")
         row.setdefault("mode", "paper")
         row.setdefault("created_at", WorkerControlService.now())
         row.setdefault("updated_at", WorkerControlService.now())
         result = jobs.insert_one(row)
         row["_id"] = str(result.inserted_id)
+        if self.audit:
+            self.audit.record(
+                "strategy_job_enqueued",
+                user=row.get("user", ""),
+                resource_type="strategy_job",
+                resource_id=row["_id"],
+                details={"mode": row.get("mode"), "symbol": row.get("symbol"), "side": row.get("side"), "strategy_id": row.get("strategy_id")},
+            )
         return row
 
     def _next_strategy_job(self):
         jobs = self._strategy_job_collection()
         if jobs is None:
             return None
+        if hasattr(jobs, "find_one_and_update"):
+            return jobs.find_one_and_update(
+                {"status": "pending"},
+                {"$set": {"status": "processing", "updated_at": WorkerControlService.now()}},
+            )
         row = jobs.find_one({"status": "pending"})
         if row:
             jobs.update_one({"_id": row["_id"]}, {"$set": {"status": "processing", "updated_at": WorkerControlService.now()}})
@@ -193,15 +209,32 @@ class TradingWorker:
                     order_type=str(job.get("order_type", "MARKET")),
                     price=float(job.get("price", 1) or 1),
                     strategy_id=str(job.get("strategy_id") or job.get("botcode") or ""),
-                    metadata=dict(job.get("metadata") or job),
+                    metadata={**dict(job.get("metadata") or {}), **dict(job), "job_id": job.get("_id")},
                 )
                 adapter = self.adapter_factory.create(broker)
                 adapter.login(BrokerCredentials(user=order.user, broker=broker))
                 result = adapter.place_order(order)
                 self._complete_strategy_job(job["_id"], result=result)
+                if self.audit:
+                    self.audit.record(
+                        "strategy_job_completed",
+                        user=order.user,
+                        resource_type="strategy_job",
+                        resource_id=job["_id"],
+                        details={"broker": broker, "result": result},
+                    )
                 processed.append({"job_id": str(job["_id"]), "result": result})
             except Exception as exc:
                 self._complete_strategy_job(job["_id"], error=str(exc))
+                if self.audit:
+                    self.audit.record(
+                        "strategy_job_failed",
+                        user=str(job.get("user") or ""),
+                        resource_type="strategy_job",
+                        resource_id=job.get("_id"),
+                        status="failed",
+                        details={"error": str(exc)},
+                    )
                 processed.append({"job_id": str(job["_id"]), "error": str(exc)})
         return processed
 

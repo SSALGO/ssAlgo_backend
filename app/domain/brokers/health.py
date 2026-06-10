@@ -1,6 +1,11 @@
 import datetime
 
-from app.domain.brokers.registry import BROKER_REQUIREMENTS, BROKER_STATUS
+from app.domain.brokers.registry import (
+    BROKER_REQUIREMENTS,
+    BROKER_STATUS,
+    broker_lookup_ids,
+    normalize_broker_id,
+)
 
 
 SECRET_FIELD_NAMES = {
@@ -16,6 +21,7 @@ SECRET_FIELD_NAMES = {
     "auth_code",
     "interactive_secret",
     "epassword",
+    "alice_password",
     "sessionid",
     "session_id",
     "user_session",
@@ -57,28 +63,34 @@ class BrokerHealthService:
         return value
 
     def required_fields(self, broker):
-        return [field["id"] for field in BROKER_REQUIREMENTS.get(broker, [])]
+        return [field["id"] for field in BROKER_REQUIREMENTS.get(normalize_broker_id(broker), [])]
+
+    def credential_row(self, username, broker):
+        return self.apis_collection.find_one({
+            "user": username,
+            "broker": {"$in": broker_lookup_ids(broker)},
+        }) or {}
 
     def active_broker(self, username):
         broker_row = self.broker_collection.find_one({"user": username}) or {}
         selected = broker_row.get("selectedbroker") or broker_row.get("selected_broker")
         if selected:
-            return selected
+            return normalize_broker_id(selected)
 
         legacy_selected = self.apis_collection.find_one(
             {"user": username, "selected_broker": {"$exists": True, "$ne": ""}}
         ) or {}
         selected = legacy_selected.get("selected_broker") or legacy_selected.get("selectedbroker")
         if selected:
-            return selected
+            return normalize_broker_id(selected)
 
         api_row = self.apis_collection.find_one({"user": username, "broker": {"$exists": True, "$ne": ""}}) or {}
-        return api_row.get("broker") or "paper"
+        return normalize_broker_id(api_row.get("broker")) or "paper"
 
     def missing_credentials(self, username, broker):
         if broker == "paper":
             return []
-        api = self.apis_collection.find_one({"user": username, "broker": broker}) or {}
+        api = self.credential_row(username, broker)
         return [
             field
             for field in self.required_fields(broker)
@@ -86,7 +98,7 @@ class BrokerHealthService:
         ]
 
     def credential_summary(self, username, broker):
-        api = self.apis_collection.find_one({"user": username, "broker": broker}) or {}
+        api = self.credential_row(username, broker)
         summary = {}
         for field in self.required_fields(broker):
             value = api.get(field)
@@ -118,7 +130,9 @@ class BrokerHealthService:
     def saved_credentials(self, username):
         credentials = {}
         for row in self.apis_collection.find({"user": username}):
-            broker = row.get("broker") or row.get("selected_broker") or row.get("selectedbroker")
+            broker = normalize_broker_id(
+                row.get("broker") or row.get("selected_broker") or row.get("selectedbroker")
+            )
             if not broker:
                 continue
             credentials[broker] = self._masked_credentials(row)

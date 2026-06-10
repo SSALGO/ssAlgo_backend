@@ -158,6 +158,7 @@ def test_broker_saved_credentials_are_returned_masked(fake_db):
         "apisecret": "raw-secret",
         "auth_code": "raw-auth-code",
         "totp_key": "raw-totp",
+        "alice_password": "raw-password",
         "sessionID": "raw-session",
         "app_key": "app-key",
     })
@@ -170,11 +171,32 @@ def test_broker_saved_credentials_are_returned_masked(fake_db):
     assert aliceblue["apisecret"] == ""
     assert aliceblue["auth_code"] == ""
     assert aliceblue["totp_key"] == ""
+    assert aliceblue["alice_password"] == ""
     assert aliceblue["sessionID"] == ""
     assert aliceblue["secret_present"]["apisecret"] is True
     assert aliceblue["secret_present"]["auth_code"] is True
     assert aliceblue["secret_present"]["totp_key"] is True
+    assert aliceblue["secret_present"]["alice_password"] is True
     assert aliceblue["secret_present"]["sessionID"] is True
+
+
+def test_broker_legacy_delta_alias_is_canonicalized(fake_db):
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "delta",
+        "api_key": "key",
+        "api_secret": "secret",
+        "selectedbroker": "delta",
+    })
+
+    health = BrokerHealthService(fake_db)
+    saved = health.saved_credentials("alice")
+
+    assert health.active_broker("alice") == "delta_exchange_india"
+    assert "delta_exchange_india" in saved
+    assert "delta" not in saved
+    assert saved["delta_exchange_india"]["api_secret"] == ""
+    assert health.credential_row("alice", "delta_exchange_india")["broker"] == "delta"
 
 
 def test_backtest_returns_required_metrics():

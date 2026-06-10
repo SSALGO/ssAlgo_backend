@@ -100,6 +100,23 @@ BROKER_STATUS = {
     'delta_exchange_india': {'enabled': False, 'status': 'coming_soon', 'notes': 'Visible for roadmap only. No login/order adapter exists yet.'},
 }
 
+BROKER_ALIASES = {
+    'delta': 'delta_exchange_india',
+    'alice': 'aliceblue',
+    'angel': 'angelone',
+}
+
+
+def normalize_broker_id(broker):
+    normalized = str(broker or '').strip().lower()
+    return BROKER_ALIASES.get(normalized, normalized)
+
+
+def broker_lookup_ids(broker):
+    canonical = normalize_broker_id(broker)
+    aliases = [alias for alias, target in BROKER_ALIASES.items() if target == canonical]
+    return [canonical, *aliases]
+
 
 def broker_payload():
     return {

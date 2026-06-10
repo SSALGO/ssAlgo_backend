@@ -26,7 +26,7 @@ from app.core.secrets import encrypt_secret_fields
 from app.domain.audit.service import AuditLogService
 from app.domain.brokers.adapters import BrokerCredentials, BrokerOrder
 from app.domain.brokers.health import SECRET_FIELD_NAMES
-from app.domain.brokers.registry import broker_payload
+from app.domain.brokers.registry import broker_lookup_ids, broker_payload, normalize_broker_id
 from app.realtime.dashboard import DashboardConnectionManager
 from app.workers.control import WorkerControlService
 
@@ -136,6 +136,7 @@ def save_broker_credentials(
     payload: BrokerCredentialsRequest,
     user=Depends(get_current_user),
 ):
+    broker = normalize_broker_id(broker)
     registry = broker_payload().get("broker_status", {}).get(broker, {})
     if registry.get("enabled") is False:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{broker} is not enabled for trading yet")
@@ -184,7 +185,10 @@ def get_broker_credentials(
     broker: str,
     user=Depends(get_current_user),
 ):
-    doc = get_database()["apis"].find_one({"user": username(user), "broker": broker}) or {}
+    doc = get_database()["apis"].find_one({
+        "user": username(user),
+        "broker": {"$in": broker_lookup_ids(broker)},
+    }) or {}
     cleaned = clean_mongo_document(doc) or {}
     for field_name in SECRET_FIELD_NAMES:
         if field_name in cleaned:

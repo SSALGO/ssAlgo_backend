@@ -16,7 +16,14 @@ SECRET_FIELD_NAMES = {
     "auth_code",
     "interactive_secret",
     "epassword",
+    "sessionid",
+    "session_id",
+    "user_session",
 }
+
+
+def is_secret_field(field_name):
+    return str(field_name or "").lower() in SECRET_FIELD_NAMES
 
 
 class BrokerHealthService:
@@ -42,6 +49,12 @@ class BrokerHealthService:
             if hasattr(row.get(key), "isoformat"):
                 row[key] = row[key].isoformat()
         return row
+
+    @staticmethod
+    def _serialize_value(value):
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return value
 
     def required_fields(self, broker):
         return [field["id"] for field in BROKER_REQUIREMENTS.get(broker, [])]
@@ -77,11 +90,39 @@ class BrokerHealthService:
         summary = {}
         for field in self.required_fields(broker):
             value = api.get(field)
-            if field in SECRET_FIELD_NAMES:
+            if is_secret_field(field):
                 summary[field] = bool(value)
             else:
                 summary[field] = value if value else ""
         return summary
+
+    def _masked_credentials(self, row):
+        if not row:
+            return {}
+        cleaned = {}
+        secret_present = {}
+        for key, value in dict(row).items():
+            if key == "_id":
+                cleaned["_id"] = str(value)
+                cleaned["id"] = cleaned.get("id") or str(value)
+                continue
+            if is_secret_field(key):
+                cleaned[key] = ""
+                secret_present[key] = bool(str(value or "").strip())
+                continue
+            cleaned[key] = self._serialize_value(value)
+        if secret_present:
+            cleaned["secret_present"] = secret_present
+        return cleaned
+
+    def saved_credentials(self, username):
+        credentials = {}
+        for row in self.apis_collection.find({"user": username}):
+            broker = row.get("broker") or row.get("selected_broker") or row.get("selectedbroker")
+            if not broker:
+                continue
+            credentials[broker] = self._masked_credentials(row)
+        return credentials
 
     def update_health(self, username, broker, **fields):
         now = self._now()

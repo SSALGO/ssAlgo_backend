@@ -150,6 +150,33 @@ def test_broker_health_falls_back_to_first_saved_api_broker(fake_db):
     assert health.active_broker("alice") == "aliceblue"
 
 
+def test_broker_saved_credentials_are_returned_masked(fake_db):
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "aliceblue",
+        "apikey": "1775863",
+        "apisecret": "raw-secret",
+        "auth_code": "raw-auth-code",
+        "totp_key": "raw-totp",
+        "sessionID": "raw-session",
+        "app_key": "app-key",
+    })
+
+    saved = BrokerHealthService(fake_db).saved_credentials("alice")
+    aliceblue = saved["aliceblue"]
+
+    assert aliceblue["apikey"] == "1775863"
+    assert aliceblue["app_key"] == "app-key"
+    assert aliceblue["apisecret"] == ""
+    assert aliceblue["auth_code"] == ""
+    assert aliceblue["totp_key"] == ""
+    assert aliceblue["sessionID"] == ""
+    assert aliceblue["secret_present"]["apisecret"] is True
+    assert aliceblue["secret_present"]["auth_code"] is True
+    assert aliceblue["secret_present"]["totp_key"] is True
+    assert aliceblue["secret_present"]["sessionID"] is True
+
+
 def test_backtest_returns_required_metrics():
     candles = [
         {"close": 100}, {"close": 101}, {"close": 102}, {"close": 99},

@@ -110,7 +110,9 @@ def list_brokers(
     services: FastAPITradingServices = Depends(get_trading_services),
 ):
     payload = broker_payload()
-    payload["current_broker"] = services.health.active_broker(username(user))
+    user_name = username(user)
+    payload["current_broker"] = services.health.active_broker(user_name)
+    payload["saved_credentials"] = services.health.saved_credentials(user_name)
     return ApiResponse(success=True, message="Brokers fetched", data=payload)
 
 

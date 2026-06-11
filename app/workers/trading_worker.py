@@ -68,13 +68,14 @@ class TradingWorker:
             return []
         rows = []
         seen = set()
-        active_users = None
+        execution_users = None
         if not user:
-            active_users = {
+            execution_users = {
                 strategy.get("user")
                 for strategy in self.db["strategies"].find({
+                    "live": True,
                     "$or": [
-                        {"status": {"$in": ["opened", "paused"]}},
+                        {"status": "opened"},
                         {"position": "in"},
                     ]
                 })
@@ -88,7 +89,7 @@ class TradingWorker:
             query["user"] = user
         for selected in self.db["broker"].find(query):
             api_user = selected.get("user")
-            if active_users is not None and api_user not in active_users:
+            if execution_users is not None and api_user not in execution_users:
                 continue
             api_broker = normalize_broker_id(
                 selected.get("selectedbroker") or selected.get("selected_broker")
@@ -125,7 +126,12 @@ class TradingWorker:
         if self.db is None:
             return {}
         symbols_by_user_broker = {}
-        for strategy in self.db["strategies"].find({"status": {"$in": ["opened", "paused"]}}):
+        for strategy in self.db["strategies"].find({
+            "$or": [
+                {"status": "opened"},
+                {"position": "in"},
+            ]
+        }):
             user = strategy.get("user")
             if not user:
                 continue

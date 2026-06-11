@@ -33,6 +33,8 @@ import typing
 import requests
 
 from app.core.trading_debug import trading_event, trading_exception
+from app.core.secrets import decrypt_secret, decrypt_secret_fields
+from app.domain.brokers.health import SECRET_FIELD_NAMES
 
 ALICEBLUE_DNS_HOSTS = {
     "a3.aliceblueonline.com",
@@ -531,6 +533,7 @@ class Exchange:
         self.testmode=False
         self._debug_last_feed_log = 0
         self._debug_strategy_eval_log_times = {}
+        self._debug_legacy_login_log_times = {}
         self.sessionusertoken=sessionusertoken
         trading_event("strategy_engine_stage", force=True, stage="remote_instrument_masters")
         self.tokdf = pd.DataFrame(columns=['symbolCode'])
@@ -1029,9 +1032,12 @@ class Exchange:
         """Get API credentials for users of a specific broker"""
         if active_users is None:
             active_users = self._get_active_users()
+        execution_active_users = self._get_execution_active_users()
         
         users = []
         for user in active_users:
+            if user not in execution_active_users:
+                continue
             try:
                 broker_info = self.broker_collection.find_one({'user': user})
                 if broker_info and broker_info.get('selectedbroker') == broker_name:
@@ -1042,6 +1048,25 @@ class Exchange:
                 print(f"Error getting {broker_name} user info for {user}: {str(e)}")
         return users
 
+    def _get_execution_active_users(self):
+        """Users whose live execution is active or who still have live positions to manage."""
+        try:
+            query = {
+                'live': True,
+                '$or': [
+                    {'status': 'opened'},
+                    {'position': 'in'},
+                ],
+            }
+            return {
+                row.get('user')
+                for row in self.strategy_collection.find(query, {'user': 1})
+                if row.get('user')
+            }
+        except Exception as e:
+            print(f"Error getting execution-active users: {e}")
+            return set()
+
     def _get_non_logged_broker_users(self, broker_name):
         """Get users of a broker who are not currently logged in"""
         items = list(self.apis_collection.find({
@@ -1050,10 +1075,11 @@ class Exchange:
         }))
         self.userloggedin = list(set(self.userloggedin))
         active_users = self._get_active_users()
+        execution_active_users = self._get_execution_active_users()
         
         users = []
         for i in items:
-            if i['user'] in active_users:
+            if i['user'] in active_users and i['user'] in execution_active_users:
                 j = self.broker_collection.find_one({'user': i['user']})
                 if j and j.get('selectedbroker') == broker_name:
                     api_info = self.apis_collection.find_one({'user': i['user'], 'broker': broker_name})
@@ -1084,14 +1110,22 @@ class Exchange:
                 except Exception as e:
                     print(f"AliceBlue market depth skipped for {user_id}: {e}")
         else:
-            trading_event(
-                "legacy_broker_login_result",
-                force=True,
-                user=user_id,
-                broker="aliceblue" if broker_dict == "alice" else broker_dict,
-                status="rejected",
-                reason="missing_or_invalid_session",
+            log_key = f"{broker_dict}:{user_id}:rejected"
+            now = time.monotonic()
+            interval = max(
+                1,
+                int(os.getenv("DEBUG_TRADING_LOGIN_INTERVAL_SECONDS", "60")),
             )
+            if now - self._debug_legacy_login_log_times.get(log_key, 0) >= interval:
+                self._debug_legacy_login_log_times[log_key] = now
+                trading_event(
+                    "legacy_broker_login_result",
+                    force=True,
+                    user=user_id,
+                    broker="aliceblue" if broker_dict == "alice" else broker_dict,
+                    status="rejected",
+                    reason="missing_or_invalid_session",
+                )
             if user_id not in self.usernotloggedin:
                 self.usernotloggedin.append(user_id)
 
@@ -1138,6 +1172,13 @@ class Exchange:
         except Exception:
             pass
         return output.splitlines()[-1]
+
+    def _aliceblue_saved_session(self, item):
+        for key in ('user_session', 'sessionID', 'session_id', 'sessionid', 'userSession'):
+            value = item.get(key)
+            if value:
+                return decrypt_secret(value)
+        return None
 
     def _refresh_aliceblue_auth(self, item):
         """Run the headless AliceBlue web/API auth flow and reload saved credentials."""
@@ -1189,11 +1230,12 @@ class Exchange:
     def _login_aliceblue(self, item):
         """AliceBlue login handler"""
         try:
+            item = decrypt_secret_fields(dict(item or {}), SECRET_FIELD_NAMES)
             user_id = str(item.get('apikey', '')).strip()
             auth_code = str(item.get('auth_code', '')).strip()
             secret_key = str(item.get('apisecret', '')).strip()
-            existing_session = item.get('user_session') or item.get('sessionID')
-            has_current_session = bool(existing_session and item.get('session_date') == str(datetime.datetime.now().date()))
+            existing_session = self._aliceblue_saved_session(item)
+            has_session = bool(str(existing_session or '').strip())
 
             missing_fields = [
                 field_name
@@ -1211,17 +1253,17 @@ class Exchange:
                     )
                 return item['user'], None, None
 
-            if not auth_code and not has_current_session:
+            if not auth_code and not has_session:
                 refreshed_item = self._refresh_aliceblue_auth(item)
                 if refreshed_item:
-                    item = refreshed_item
+                    item = decrypt_secret_fields(dict(refreshed_item), SECRET_FIELD_NAMES)
                     user_id = str(item.get('apikey', '')).strip()
                     auth_code = str(item.get('auth_code', '')).strip()
                     secret_key = str(item.get('apisecret', '')).strip()
-                    existing_session = item.get('user_session') or item.get('sessionID')
-                    has_current_session = bool(existing_session and item.get('session_date') == str(datetime.datetime.now().date()))
+                    existing_session = self._aliceblue_saved_session(item)
+                    has_session = bool(str(existing_session or '').strip())
 
-            if not auth_code and not has_current_session:
+            if not auth_code and not has_session:
                 if not self._should_suppress_aliceblue_login_warning(item.get('user')):
                     print(f"AliceBlue login skipped for {item.get('user')}: missing auth_code")
                 return item['user'], None, None
@@ -1230,23 +1272,23 @@ class Exchange:
                 user_id=user_id,
                 auth_code=auth_code,
                 secret_key=secret_key,
-                session_id=existing_session if has_current_session else None
+                session_id=existing_session if has_session else None
             )
-            if has_current_session:
+            if has_session:
                 session_id = alice_instance.get_session_id(session_id=existing_session)
             else:
                 session_id = alice_instance.get_session_id()
                 if isinstance(session_id, dict) and 'sessionID' not in session_id:
                     refreshed_item = self._refresh_aliceblue_auth(item)
                     if refreshed_item:
-                        item = refreshed_item
+                        item = decrypt_secret_fields(dict(refreshed_item), SECRET_FIELD_NAMES)
+                        existing_session = self._aliceblue_saved_session(item)
                         alice_instance = AliceBlueTradeHubAdapter(
                             user_id=str(item.get('apikey', '')).strip(),
                             auth_code=str(item.get('auth_code', '')).strip(),
                             secret_key=str(item.get('apisecret', '')).strip(),
                             session_id=existing_session
                         )
-                        existing_session = item.get('user_session') or item.get('sessionID')
                         session_id = alice_instance.get_session_id(session_id=existing_session) if existing_session else alice_instance.get_session_id()
             
             if isinstance(session_id, dict):
@@ -1785,7 +1827,7 @@ class Exchange:
 
     def _reloginusers(self):
         """AliceBlue relogin - uses generic processor"""
-        self._process_broker_relogins('aliceblue', self._login_aliceblue, 'alice', 'sessionID', sleep_time=1)
+        self._process_broker_relogins('aliceblue', self._login_aliceblue, 'alice', 'sessionID', sleep_time=60)
 
     def _shoonyareloginusers(self):
         """Shoonya relogin - uses generic processor"""
@@ -2530,7 +2572,7 @@ class Exchange:
                 for i in pos:
                     poss.append(i['botcode'])
                 #print(poss)
-                mains = list(self.strategy_collection.find({'$or': [{'status': {'$in': ['opened', 'paused']}}, {'position': 'in'}]}))
+                mains = list(self.strategy_collection.find({'$or': [{'status': 'opened'}, {'position': 'in'}]}))
                 if len(poss)>0:
                     mains1 = list(self.strategy_collection.find({'botcode': {'$in': poss}}))
                     if len(mains1)>0:
@@ -2573,7 +2615,10 @@ class Exchange:
             try:
                 #print(self.prices)
                 #time.sleep(1)
-                mains = list(self.strategy_collection.find({'$or': [{'status': {'$in': ['opened', 'paused']}}, {'position': 'in'},{'strategy': {'$in': ['SSEQUITY', 'SSEQUITYFNO','EQSSALGO']}}]}))
+                mains = list(self.strategy_collection.find({
+                    'strategy': {'$in': ['SSEQUITY', 'SSEQUITYFNO', 'EQSSALGO']},
+                    '$or': [{'status': 'opened'}, {'position': 'in'}],
+                }))
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     executor.map(self.process_equity_strategy, mains)
@@ -2595,7 +2640,7 @@ class Exchange:
         while not self._shutdown_event.is_set():
             try:
                 
-                mains = list(self.strategy_collection.find({'$or': [{'status': {'$in': ['opened', 'paused']}}, {'position': 'in'}]}))
+                mains = list(self.strategy_collection.find({'$or': [{'status': 'opened'}, {'position': 'in'}]}))
                 now = time.monotonic()
                 if now - self._debug_last_feed_log >= 30:
                     active_symbols = sorted({
@@ -8642,10 +8687,11 @@ class Exchange:
         except Exception:
             return False
 
-        session_value = api_info.get('user_session') or api_info.get('sessionID')
-        session_date = str(api_info.get('session_date') or '')
+        api_info = decrypt_secret_fields(dict(api_info), SECRET_FIELD_NAMES)
+        session_value = self._aliceblue_saved_session(api_info)
+        session_date = str(api_info.get('session_date') or api_info.get('date') or '')
         today = str(datetime.datetime.now().date())
-        return bool(session_value and session_date == today)
+        return bool(session_value and (not session_date or session_date == today))
 
     def _ensure_aliceblue_market_depth(self, user):
         if not getattr(self, 'aliceblue_market_depth_enabled', False):

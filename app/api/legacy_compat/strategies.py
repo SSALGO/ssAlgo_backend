@@ -162,6 +162,21 @@ async def api_stop_ssalgo(request: Request, user=Depends(get_current_user)):
 async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
     payload = await payload_from_request(request)
     botcode = form_value(payload, "id") or form_value(payload, "botcode")
+    runtime = WorkerControlService(get_database()).get_status()
+    runtime_ready = runtime.get("healthy") is True and runtime.get("strategy_engine") == "running"
+    if not runtime_ready:
+        trading_event(
+            "strategy_start_rejected",
+            user=current_username(user),
+            strategy_id=botcode,
+            force=True,
+            reason="trading_runtime_not_ready",
+            runtime=runtime,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Trading runtime is not running. Start the trading worker before starting strategies.",
+        )
     result = collection("strategies").update_one(
         {"botcode": botcode, "user": current_username(user)},
         fractal_reset_update(botcode, current_username(user), {"status": "opened"}),
@@ -169,8 +184,6 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
     strategy = collection("strategies").find_one({"botcode": botcode, "user": current_username(user)}) or {}
-    runtime = WorkerControlService(get_database()).get_status()
-    runtime_ready = runtime.get("healthy") is True and runtime.get("strategy_engine") == "running"
     details = {
         "strategy": strategy.get("strategy"),
         "symbol": strategy.get("symbol"),
@@ -194,10 +207,10 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
         force=True,
         **details,
     )
-    message = "Successfully started SSALGO strategy"
-    if not runtime_ready:
-        message += "; trading runtime is not ready, so no signals or orders will be generated"
-    return response(message, {"runtime": runtime, "runtime_ready": runtime_ready})
+    return response(
+        "Successfully started SSALGO strategy",
+        {"runtime": runtime, "runtime_ready": runtime_ready},
+    )
 
 
 async def api_stop_admin_ssalgo(request: Request, _admin=Depends(require_admin)):

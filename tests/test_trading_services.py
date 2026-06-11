@@ -15,6 +15,7 @@ from app.domain.readiness.service import LiveReadinessService
 from app.domain.reconciliation.service import BrokerReconciliationService
 from app.domain.risk.service import RiskControlService
 from app.workers.trading_worker import TradingWorker
+from app.core.logging_config import sanitize_log_value
 from app.core.secrets import decrypt_secret, encrypt_secret
 
 
@@ -30,6 +31,33 @@ def test_aliceblue_sdk_import_reports_nested_missing_dependency(monkeypatch):
 
     with pytest.raises(ImportError, match="Python module 'setuptools' is missing"):
         load_trade_hub()
+
+
+def test_log_sanitizer_masks_camel_case_broker_session():
+    sanitized = sanitize_log_value({
+        "raw": {
+            "userSession": "live-session-token",
+            "status": "connected",
+        }
+    })
+
+    assert sanitized["raw"]["userSession"] != "live-session-token"
+    assert sanitized["raw"]["status"] == "connected"
+
+
+def test_worker_refreshes_only_explicitly_selected_brokers(fake_db):
+    fake_db["broker"].insert_one({"user": "alice", "selectedbroker": "aliceblue"})
+    fake_db["broker"].insert_one({"user": "bob", "selectedbroker": "paper"})
+    fake_db["apis"].insert_one({"user": "alice", "broker": "aliceblue"})
+    fake_db["apis"].insert_one({"user": "alice", "broker": "dhan"})
+    fake_db["apis"].insert_one({"user": "charlie", "broker": "fyers"})
+
+    worker = TradingWorker(db=fake_db)
+
+    assert worker._users_with_broker_credentials() == [
+        ("alice", "aliceblue"),
+        ("bob", "paper"),
+    ]
 
 
 def test_paper_order_creates_normalized_lifecycle(fake_db):

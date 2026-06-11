@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from typing import Any
 
 
@@ -23,8 +24,15 @@ SENSITIVE_KEYS = {
     "session_id",
     "sessionid",
     "user_session",
+    "usersession",
     "signature",
     "otp",
+    "jwt",
+    "bearer",
+}
+NORMALIZED_SENSITIVE_KEYS = {
+    re.sub(r"[^a-z0-9]", "", name)
+    for name in SENSITIVE_KEYS
 }
 
 
@@ -41,7 +49,8 @@ def sanitize_log_value(value: Any) -> Any:
     if isinstance(value, dict):
         sanitized = {}
         for key, item in value.items():
-            if str(key).lower() in SENSITIVE_KEYS:
+            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized_key in NORMALIZED_SENSITIVE_KEYS:
                 sanitized[key] = mask_value(item)
             else:
                 sanitized[key] = sanitize_log_value(item)

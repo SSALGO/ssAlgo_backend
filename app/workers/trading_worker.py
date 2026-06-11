@@ -54,16 +54,23 @@ class TradingWorker:
         if self.db is None:
             return []
         rows = []
-        query = {}
+        seen = set()
+        query = {"$or": [
+            {"selectedbroker": {"$exists": True, "$ne": ""}},
+            {"selected_broker": {"$exists": True, "$ne": ""}},
+        ]}
         if user:
             query["user"] = user
-        if broker:
-            query["broker"] = broker
-        for api in self.db["apis"].find(query):
-            api_user = api.get("user")
-            api_broker = api.get("broker")
-            if api_user and api_broker:
-                rows.append((api_user, api_broker))
+        for selected in self.db["broker"].find(query):
+            api_user = selected.get("user")
+            api_broker = selected.get("selectedbroker") or selected.get("selected_broker")
+            api_broker = str(api_broker or "").strip().lower()
+            if broker and api_broker != str(broker).strip().lower():
+                continue
+            pair = (api_user, api_broker)
+            if api_user and api_broker and pair not in seen:
+                seen.add(pair)
+                rows.append(pair)
         return rows
 
     def refresh_broker_logins(self, user=None, broker=None):

@@ -5,7 +5,7 @@ import time
 
 from app.core.database import get_database
 from app.core.logging_config import configure_logging
-from app.core.trading_debug import configure_trading_debug_logging
+from app.core.trading_debug import configure_trading_debug_logging, trading_event
 from app.domain.brokers.health import BrokerHealthService
 from app.workers.trading_worker import TradingWorker
 
@@ -49,7 +49,15 @@ def main():
             strategy_engine=runtime_status["state"],
             strategy_engine_error=runtime_status["error"],
         )
-        if runtime_status["state"] != "running":
+        if runtime_status["state"] == "running":
+            trading_event("strategy_engine_ready", force=True)
+        else:
+            trading_event(
+                "strategy_engine_failed",
+                force=True,
+                state=runtime_status["state"],
+                error=runtime_status["error"],
+            )
             logger.error("Strategy engine failed to start: %s", runtime_status["error"])
     while worker._thread and worker._thread.is_alive():
         time.sleep(1)

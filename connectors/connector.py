@@ -23,7 +23,7 @@ from oibased import OILevel
 from levelbased import HuntLevel
 from strategies import TechnicalStrategy, BreakoutStrategy
 from models import *
-from urllib.parse import parse_qs,urlparse
+from urllib.parse import parse_qs, quote, urlparse
 import os
 import re
 from dateutil.relativedelta import relativedelta
@@ -503,6 +503,7 @@ class ShoonyaApiPy(NorenApi):
 
 class Exchange:
     def __init__(self, api,db,cred,reapi,sessionusertoken):
+        trading_event("strategy_engine_stage", force=True, stage="constructor_started")
         self._shutdown_event = threading.Event()
         atexit.register(self._shutdown_event.set)
         self.cred=cred
@@ -523,6 +524,7 @@ class Exchange:
         self.testmode=False
         self._debug_last_feed_log = 0
         self.sessionusertoken=sessionusertoken
+        trading_event("strategy_engine_stage", force=True, stage="remote_instrument_masters")
         self.tokdf=pd.read_csv('https://developers.stocknote.com/doc/ScripMaster.csv')
         self.upstoxsymbolmaster=pd.read_json('https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz') 
         self.samlist=list(self.tokdf['symbolCode'])
@@ -542,7 +544,7 @@ class Exchange:
         except Exception as e:
             print("Failed to load AngelOne script master:", e)
             self.angelone_scripts = pd.DataFrame()
-        self.angelone_scripts = pd.read_json('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json')
+        trading_event("strategy_engine_stage", force=True, stage="local_contract_masters")
         self.orders_collection = self.db["orders"]
         self.users_collection = self.db["users"]
         self.apis_collection = self.db["apis"]
@@ -878,10 +880,23 @@ class Exchange:
         self.lastupdates={}
         self.feed_opened = False
     
-        self.api.start_websocket(order_update_callback=self.event_handler_order_update,
-                                subscribe_callback=self.event_handler_feed_update, socket_open_callback=self.open_callback,socket_close_callback=self.close_callback,
-                                socket_error_callback=self.error_callback)
-        self.api.subscribe(self.subscribe_list)
+        if self.api is not None:
+            trading_event("strategy_engine_stage", force=True, stage="shoonya_websocket_start")
+            self.api.start_websocket(
+                order_update_callback=self.event_handler_order_update,
+                subscribe_callback=self.event_handler_feed_update,
+                socket_open_callback=self.open_callback,
+                socket_close_callback=self.close_callback,
+                socket_error_callback=self.error_callback,
+            )
+            self.api.subscribe(self.subscribe_list)
+        else:
+            trading_event(
+                "strategy_engine_stage",
+                force=True,
+                stage="shoonya_websocket_skipped",
+                reason="not_configured",
+            )
     
         
 
@@ -910,6 +925,7 @@ class Exchange:
         self.reconnect = True
 
         
+        trading_event("strategy_engine_stage", force=True, stage="initial_candle_load")
         self.hist('BANKNIFTY', tf="1",initial=True)
         self.hist('NIFTY', tf="1",initial=True)
         self.hist('SENSEX', tf="1",initial=True)
@@ -935,6 +951,7 @@ class Exchange:
             print(f"EOFError while loading data from ")
         except Exception as e:
             print(f"An error occurred: {e}")
+        trading_event("strategy_engine_stage", force=True, stage="thread_start")
         self._load_open_option_watchlist()
         self._start_all_threads()
         trading_event(
@@ -964,6 +981,8 @@ class Exchange:
     def _get_active_users(self):
         """Get list of users with active subscriptions"""
         dd = pd.DataFrame(list(self.subscriptionperiod_collection.find()))
+        if dd.empty or 'user' not in dd.columns or 'end' not in dd.columns:
+            return []
         dd['end'] = pd.to_datetime(dd['end'])
         dd['result'] = dd['end'] >= pd.to_datetime(datetime.datetime.now())
         return list(dd[dd['result'] == True]['user'])
@@ -1015,11 +1034,26 @@ class Exchange:
             if user_id in self.usernotloggedin:
                 self.usernotloggedin.remove(user_id)
             if broker_dict == 'alice':
+                trading_event(
+                    "legacy_broker_login_result",
+                    force=True,
+                    user=user_id,
+                    broker="aliceblue",
+                    status="connected",
+                )
                 try:
                     self._ensure_aliceblue_market_depth(user_id)
                 except Exception as e:
                     print(f"AliceBlue market depth skipped for {user_id}: {e}")
         else:
+            trading_event(
+                "legacy_broker_login_result",
+                force=True,
+                user=user_id,
+                broker="aliceblue" if broker_dict == "alice" else broker_dict,
+                status="rejected",
+                reason="missing_or_invalid_session",
+            )
             if user_id not in self.usernotloggedin:
                 self.usernotloggedin.append(user_id)
 
@@ -1177,11 +1211,21 @@ class Exchange:
                         existing_session = item.get('user_session') or item.get('sessionID')
                         session_id = alice_instance.get_session_id(session_id=existing_session) if existing_session else alice_instance.get_session_id()
             
-            if 'sessionID' in session_id.keys():
-                return item['user'], alice_instance, session_id
+            if isinstance(session_id, dict):
+                session_value = session_id.get('sessionID') or session_id.get('userSession')
+                if session_value:
+                    normalized_session = dict(session_id)
+                    normalized_session['sessionID'] = session_value
+                    return item['user'], alice_instance, normalized_session
             return item['user'], None, None
         except Exception as e:
             print(f"AliceBlue login error for {item['user']}: {e}")
+            trading_exception(
+                "legacy_broker_login_error",
+                e,
+                user=item.get("user"),
+                broker="aliceblue",
+            )
             return item['user'], None, None
 
     def _login_shoonya(self, item):
@@ -1600,12 +1644,27 @@ class Exchange:
 
             threading.Thread(target=self._dataloader),
             threading.Thread(target=self._positionshold),
-            threading.Thread(target=self.run_websocket, daemon=True),
             threading.Thread(target=self._datascript),
             threading.Thread(target=self._dataequityscript),
             threading.Thread(target=self._dataorderscript),
             threading.Thread(target=self._stopnotsubusers),
         ]
+        if all(
+            os.getenv(name, "").strip()
+            for name in (
+                "SSLAGO_STOCKNOTE_USER_ID",
+                "SSLAGO_STOCKNOTE_PASSWORD",
+                "SSLAGO_STOCKNOTE_YOB",
+            )
+        ):
+            threads.append(threading.Thread(target=self.run_websocket, daemon=True))
+        else:
+            trading_event(
+                "strategy_engine_stage",
+                force=True,
+                stage="stocknote_websocket_skipped",
+                reason="not_configured",
+            )
         
         for t in threads:
             t.daemon = True
@@ -6856,7 +6915,7 @@ class Exchange:
                 optionlot
             )
 
-            if self.websocketretry > 10:
+            if self.websocketretry > 10 and self.api is not None:
                 self.api.subscribe(self.subscribe_list)
                 self.add_symbol_to_websocket(option)
 
@@ -7558,7 +7617,7 @@ class Exchange:
                 optionlot
             )
 
-            if self.websocketretry > 10:
+            if self.websocketretry > 10 and self.api is not None:
 
                 self.api.subscribe(self.subscribe_list)
                 self.add_symbol_to_websocket(option)
@@ -8101,7 +8160,7 @@ class Exchange:
                 # ------------------ WEBSOCKET ------------------
                 connected = self.add_symbol_to_websocket(trade['optionname'])
 
-                if self.websocketretry > 10:
+                if self.websocketretry > 10 and self.api is not None:
                     self.api.subscribe(self.subscribe_list)
                     self.add_symbol_to_websocket(trade['optionname'], force=True)
                     if trade['optionname'] in self.prices:
@@ -9337,6 +9396,8 @@ class Exchange:
             return self.Markettime['MCX']['start'], self.Markettime['MCX']['end']
 
     def add_to_websocket(self, token):
+        if self.api is None:
+            return
         if type(token) == str:
             if token not in self.subscribe_list:
                 self.subscribe_list.append(token)
@@ -9366,6 +9427,66 @@ class Exchange:
         else:
             print('')
 
+    def _load_upstox_candles(self, symbol, days=7):
+        instrument = self.upstoxtok_symbols.get(symbol)
+        if not instrument:
+            return pd.DataFrame()
+
+        end_date = datetime.datetime.now().strftime('%Y-%m-%d')
+        start_date = (
+            datetime.datetime.now() - datetime.timedelta(days=days)
+        ).strftime('%Y-%m-%d')
+        encoded_instrument = quote(str(instrument), safe='')
+        urls = [
+            (
+                f'https://api-v2.upstox.com/historical-candle/'
+                f'{encoded_instrument}/1minute/{end_date}/{start_date}'
+            ),
+            (
+                f'https://api-v2.upstox.com/historical-candle/intraday/'
+                f'{encoded_instrument}/1minute'
+            ),
+        ]
+        candles = []
+        headers = {'accept': 'application/json', 'Api-Version': '2.0'}
+        for url in urls:
+            try:
+                response = requests.get(url, headers=headers, timeout=20)
+                response.raise_for_status()
+                candles.extend(
+                    response.json().get('data', {}).get('candles', [])
+                )
+            except Exception as exc:
+                trading_exception(
+                    "market_data_request_error",
+                    exc,
+                    provider="upstox",
+                    symbol=symbol,
+                    url=url,
+                )
+
+        if not candles:
+            return pd.DataFrame()
+
+        frame = pd.DataFrame(
+            candles,
+            columns=['date', 'open', 'high', 'low', 'close', 'volume', 'oi'],
+        )
+        frame['date'] = pd.to_datetime(frame['date'])
+        frame['time'] = frame['date'].dt.strftime('%d-%m-%Y %H:%M:%S')
+        frame['sqlite_timestamp'] = frame['date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        frame['symbol'] = symbol
+        for column in ('open', 'high', 'low', 'close', 'volume'):
+            frame[column] = pd.to_numeric(frame[column], errors='coerce')
+        return (
+            frame[['date', 'open', 'high', 'low', 'close', 'volume', 'time',
+                   'sqlite_timestamp', 'symbol']]
+            .dropna(subset=['date', 'open', 'high', 'low', 'close'])
+            .drop_duplicates(subset='time')
+            .sort_values('date')
+            .reset_index(drop=True)
+        )
+
     def hist(self, symbol, tf="1", initial=True):
         
             #try:
@@ -9389,6 +9510,37 @@ class Exchange:
                 #print(symbol)
                 #print(self.tok_symbols[symbol])
                 #print(symbol)
+                if self.api is None:
+                    df1m = self._load_upstox_candles(symbol)
+                    if df1m.empty:
+                        trading_event(
+                            "candle_load_result",
+                            force=True,
+                            provider="upstox",
+                            symbol=symbol,
+                            candles=0,
+                        )
+                        return None
+                    self.lastupdates[symbol] = df1m['time'].iloc[-1]
+                    existing = self.dataframes.get(symbol)
+                    if initial or not isinstance(existing, pd.DataFrame):
+                        self.dataframes[symbol] = df1m
+                    else:
+                        self.dataframes[symbol] = (
+                            pd.concat([existing, df1m])
+                            .drop_duplicates(subset='time')
+                            .sort_values('date')
+                            .reset_index(drop=True)
+                        )
+                    trading_event(
+                        "candle_load_result",
+                        force=True,
+                        provider="upstox",
+                        symbol=symbol,
+                        candles=len(self.dataframes[symbol]),
+                    )
+                    return self.lastupdates[symbol]
+
                 ret = self.api.get_time_price_series(
                     exchange=self.tok_symbols[symbol][:3],
                     token=self.tok_symbols[symbol][4:],
@@ -9772,7 +9924,7 @@ class Exchange:
         destory=False
         if force and symbol in self.loadedwatchsymbols:
             token = self.tok_symbols.get(symbol)
-            if token:
+            if token and self.api is not None:
                 try:
                     self.api.subscribe(token)
                 except Exception as e:

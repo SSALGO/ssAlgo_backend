@@ -19,6 +19,7 @@ except ImportError:
 NorenBase = NorenApi or object
 
 from backend_modules.config import AppConfig
+from app.core.trading_debug import trading_event, trading_exception
 
 
 if sys.platform.startswith("win"):
@@ -197,12 +198,14 @@ class DeferredTrader:
 
         def _runner():
             try:
+                trading_event("strategy_engine_initialization_started", force=True)
                 trader_instance = factory()
                 trader_instance.real = True
                 self._trader = trader_instance
             except Exception as exc:
                 self._error = exc
                 logging.exception("Trader initialization failed")
+                trading_exception("strategy_engine_initialization_error", exc)
             finally:
                 self._ready.set()
 

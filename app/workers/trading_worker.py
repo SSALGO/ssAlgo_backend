@@ -1,4 +1,5 @@
 import logging
+import os
 import threading
 import time
 
@@ -14,6 +15,13 @@ from app.api.fastapi_schemas import WorkerOrderRequest
 
 
 logger = logging.getLogger(__name__)
+
+
+def _env_bool(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class TradingWorker:
@@ -35,6 +43,10 @@ class TradingWorker:
         self.interval_seconds = interval_seconds
         self.relogin_interval_seconds = relogin_interval_seconds
         self.subscription_interval_seconds = subscription_interval_seconds
+        self.enable_broker_maintenance = _env_bool(
+            "SSLAGO_ENABLE_BROKER_MAINTENANCE",
+            False,
+        )
         self._stop_event = threading.Event()
         self._thread = None
         self._last_relogin = 0
@@ -332,12 +344,13 @@ class TradingWorker:
                         trading_exception("worker_command_failed", exc, command=command)
                         self.control.complete(command["_id"], error=str(exc))
                 now = time.monotonic()
-                if now - self._last_relogin >= self.relogin_interval_seconds:
-                    self.refresh_broker_logins()
-                    self._last_relogin = now
-                if now - self._last_subscription >= self.subscription_interval_seconds:
-                    self.refresh_subscriptions()
-                    self._last_subscription = now
+                if self.enable_broker_maintenance:
+                    if now - self._last_relogin >= self.relogin_interval_seconds:
+                        self.refresh_broker_logins()
+                        self._last_relogin = now
+                    if now - self._last_subscription >= self.subscription_interval_seconds:
+                        self.refresh_subscriptions()
+                        self._last_subscription = now
                 processed = self.process_strategy_jobs()
                 self.control.heartbeat(state="running", processed_jobs=len(processed))
             time.sleep(self.interval_seconds)

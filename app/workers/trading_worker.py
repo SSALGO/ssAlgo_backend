@@ -2,6 +2,7 @@ import logging
 import threading
 import time
 
+from app.core.trading_debug import trading_event, trading_exception
 from app.domain.brokers.adapters import BrokerAdapterFactory, BrokerCredentials, BrokerOrder
 from app.domain.brokers.health import BrokerHealthService
 from app.domain.audit.service import AuditLogService
@@ -71,8 +72,10 @@ class TradingWorker:
             try:
                 adapter = self.adapter_factory.create(broker)
                 result = adapter.login(BrokerCredentials(user=user, broker=broker))
+                trading_event("broker_login_result", user=user, broker=broker, result=result)
                 refreshed.append({"user": user, "broker": broker, "result": result})
             except Exception as exc:
+                trading_exception("broker_login_error", exc, user=user, broker=broker)
                 if self.health_service:
                     self.health_service.update_health(
                         user,
@@ -113,6 +116,13 @@ class TradingWorker:
                 adapter = self.adapter_factory.create(strategy_broker)
                 adapter.login(BrokerCredentials(user=strategy_user, broker=strategy_broker))
                 result = adapter.subscribe(sorted(symbols), user=strategy_user)
+                trading_event(
+                    "market_subscription_result",
+                    user=strategy_user,
+                    broker=strategy_broker,
+                    symbols=sorted(symbols),
+                    result=result,
+                )
                 if self.health_service:
                     self.health_service.update_health(
                         strategy_user,
@@ -122,6 +132,13 @@ class TradingWorker:
                     )
                 results.append({"user": strategy_user, "broker": strategy_broker, "symbols": sorted(symbols), "result": result})
             except Exception as exc:
+                trading_exception(
+                    "market_subscription_error",
+                    exc,
+                    user=strategy_user,
+                    broker=strategy_broker,
+                    symbols=sorted(symbols),
+                )
                 if self.health_service:
                     self.health_service.update_health(
                         strategy_user,
@@ -146,6 +163,7 @@ class TradingWorker:
         row.setdefault("updated_at", WorkerControlService.now())
         result = jobs.insert_one(row)
         row["_id"] = str(result.inserted_id)
+        trading_event("order_request_generated", job=row)
         if self.audit:
             self.audit.record(
                 "strategy_job_enqueued",
@@ -211,6 +229,18 @@ class TradingWorker:
                     strategy_id=str(job.get("strategy_id") or job.get("botcode") or ""),
                     metadata={**dict(job.get("metadata") or {}), **dict(job), "job_id": job.get("_id")},
                 )
+                trading_event(
+                    "order_payload_ready",
+                    job_id=job.get("_id"),
+                    user=order.user,
+                    broker=broker,
+                    strategy_id=order.strategy_id,
+                    symbol=order.symbol,
+                    side=order.side,
+                    quantity=order.quantity,
+                    mode=mode,
+                    metadata=order.metadata,
+                )
                 adapter = self.adapter_factory.create(broker)
                 adapter.login(BrokerCredentials(user=order.user, broker=broker))
                 result = adapter.place_order(order)
@@ -225,6 +255,13 @@ class TradingWorker:
                     )
                 processed.append({"job_id": str(job["_id"]), "result": result})
             except Exception as exc:
+                trading_exception(
+                    "strategy_job_failed",
+                    exc,
+                    job_id=job.get("_id"),
+                    user=job.get("user"),
+                    strategy_id=job.get("strategy_id") or job.get("botcode"),
+                )
                 self._complete_strategy_job(job["_id"], error=str(exc))
                 if self.audit:
                     self.audit.record(
@@ -258,6 +295,7 @@ class TradingWorker:
 
     def run(self):
         logger.info("Trading worker started")
+        trading_event("trading_worker_started", force=True)
         if self.control:
             self.control.heartbeat(state="running")
         while not self._stop_event.is_set():
@@ -268,6 +306,7 @@ class TradingWorker:
                         self.control.complete(command["_id"], self.handle_command(command))
                     except Exception as exc:
                         logger.exception("Worker command failed")
+                        trading_exception("worker_command_failed", exc, command=command)
                         self.control.complete(command["_id"], error=str(exc))
                 now = time.monotonic()
                 if now - self._last_relogin >= self.relogin_interval_seconds:
@@ -282,3 +321,4 @@ class TradingWorker:
         if self.control:
             self.control.heartbeat(state="stopped")
         logger.info("Trading worker stopped")
+        trading_event("trading_worker_stopped", force=True)

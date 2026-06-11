@@ -3,6 +3,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
+from app.core.trading_debug import trading_event
+
 
 @dataclass
 class RiskCheckResult:
@@ -253,6 +255,20 @@ class RiskControlService:
         strategy_id = str(getattr(order, "strategy_id", "") or metadata.get("strategy_id") or metadata.get("botcode") or "").strip()
         settings = self.settings_for_user(user)
         checks = []
+        trading_event(
+            "risk_validation_started",
+            user=user,
+            broker=broker,
+            strategy_id=strategy_id,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            mode=mode,
+            settings=settings,
+            orders_today=self._orders_today(user),
+            open_positions=self._open_positions(user),
+            realized_pnl_today=self._realized_pnl_today(user),
+        )
 
         if settings.get("kill_switch"):
             return RiskCheckResult(False, "Trading kill switch is enabled", checks)

@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from app.core.trading_debug import trading_event
+
 
 @dataclass
 class BrokerCredentials:
@@ -38,6 +40,19 @@ class BrokerAdapter(ABC):
         if self.risk_service is None:
             return None
         result = self.risk_service.check_order(order, mode=mode)
+        trading_event(
+            "risk_validation_result",
+            user=order.user,
+            broker=order.broker,
+            strategy_id=order.strategy_id,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            mode=mode,
+            allowed=result.allowed,
+            reason=result.reason,
+            checks=result.checks,
+        )
         if not result.allowed:
             raise PermissionError(result.reason)
         return result

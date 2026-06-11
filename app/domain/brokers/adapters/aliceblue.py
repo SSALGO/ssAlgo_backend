@@ -1,6 +1,7 @@
 import contextlib
 import io
 
+from app.core.trading_debug import trading_event, trading_exception
 from .live_base import NormalizedLiveBrokerAdapter
 
 
@@ -79,6 +80,29 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             "orderTag": metadata.get("orderTag") or "ssalgo",
             **self._instrument_kwargs(metadata),
         }
-        response = client.placeOrder(**request_payload)
+        trading_event(
+            "broker_api_request",
+            user=order.user,
+            broker=self.broker_name,
+            strategy_id=order.strategy_id,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            payload=request_payload,
+        )
+        try:
+            response = client.placeOrder(**request_payload)
+        except Exception as exc:
+            trading_exception(
+                "broker_api_error",
+                exc,
+                user=order.user,
+                broker=self.broker_name,
+                strategy_id=order.strategy_id,
+                symbol=order.symbol,
+                side=order.side,
+                quantity=order.quantity,
+            )
+            raise
         normalized = self.normalize_response("place_order", response)
         return self.record_order_result(order, normalized, raw_request=request_payload)

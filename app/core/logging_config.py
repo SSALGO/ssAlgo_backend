@@ -6,18 +6,25 @@ from typing import Any
 SENSITIVE_KEYS = {
     "password",
     "pwd",
+    "pin",
     "secret",
     "api_secret",
     "apisecret",
     "secret_key",
     "totp",
     "totp_key",
+    "factor2",
+    "interactive_secret",
+    "epassword",
     "token",
     "access_token",
     "auth_code",
     "session",
     "session_id",
     "sessionid",
+    "user_session",
+    "signature",
+    "otp",
 }
 
 

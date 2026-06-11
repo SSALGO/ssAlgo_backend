@@ -59,6 +59,19 @@ class WorkerControlService:
     def get_status(self, name="trading_worker"):
         row = self.status.find_one({"name": name}) or {"name": name, "state": "unknown"}
         row = dict(row)
+        heartbeat_at = row.get("heartbeat_at")
+        heartbeat_age_seconds = None
+        if isinstance(heartbeat_at, datetime.datetime):
+            heartbeat = heartbeat_at
+            if heartbeat.tzinfo is None:
+                heartbeat = heartbeat.replace(tzinfo=datetime.UTC)
+            heartbeat_age_seconds = max(0, int((self.now() - heartbeat).total_seconds()))
+        row["heartbeat_age_seconds"] = heartbeat_age_seconds
+        row["healthy"] = (
+            row.get("state") == "running"
+            and heartbeat_age_seconds is not None
+            and heartbeat_age_seconds <= 10
+        )
         if "_id" in row:
             row["_id"] = str(row["_id"])
         for key, value in list(row.items()):

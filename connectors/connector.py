@@ -32,6 +32,7 @@ from typing import *
 import typing
 import requests
 
+from app.core.trading_debug import trading_event, trading_exception
 
 ALICEBLUE_DNS_HOSTS = {
     "a3.aliceblueonline.com",
@@ -520,6 +521,7 @@ class Exchange:
         self.shoonya=dict()
         self.mstock = {}
         self.testmode=False
+        self._debug_last_feed_log = 0
         self.sessionusertoken=sessionusertoken
         self.tokdf=pd.read_csv('https://developers.stocknote.com/doc/ScripMaster.csv')
         self.upstoxsymbolmaster=pd.read_json('https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz') 
@@ -935,6 +937,12 @@ class Exchange:
             print(f"An error occurred: {e}")
         self._load_open_option_watchlist()
         self._start_all_threads()
+        trading_event(
+            "strategy_engine_started",
+            force=True,
+            database=getattr(db, "name", ""),
+            test_mode=self.testmode,
+        )
         # ============== Helper Methods ==============
 
     def _load_open_option_watchlist(self):
@@ -2310,37 +2318,73 @@ class Exchange:
         #if (trade['status'] != 'closed' ):
             #print('hello')
         #print(trade['strategy'])
-        if trade['strategy']=='FRACTALNUBIATIMEHEDGEORDER':
-            self.FRACTALNUBIATIMEHEDGEORDER(trade)
+        try:
+            self._log_strategy_evaluation(trade)
+            if trade['strategy']=='FRACTALNUBIATIMEHEDGEORDER':
+                self.FRACTALNUBIATIMEHEDGEORDER(trade)
+        except Exception as exc:
+            self._log_strategy_exception(trade, exc)
+            raise
 
     def process_equity_strategy(self,trade):
         #if trade['user'] in list(self.alice.keys()):
         #if (trade['status'] != 'closed' ):
             #print('hello')
-        if trade['strategy'] == 'SSEQUITY':
-            self.CHARTINK(trade)
-        #elif trade['strategy'] == 'SSEQUITYFNO':
-        #    self.TOPBOTTOM(trade)
-        elif trade['strategy'] == 'EQSSALGO':
-            self.EQSSALGO(trade)
+        try:
+            self._log_strategy_evaluation(trade)
+            if trade['strategy'] == 'SSEQUITY':
+                self.CHARTINK(trade)
+            elif trade['strategy'] == 'EQSSALGO':
+                self.EQSSALGO(trade)
+        except Exception as exc:
+            self._log_strategy_exception(trade, exc)
+            raise
+
     def process_strategy(self,trade):
         #if trade['user'] in list(self.alice.keys()):
         #if (trade['status'] != 'closed' ):
             #print('hello')
-        if trade['strategy'] == 'SSALGO':
-            self.SSALGO(trade)
-        elif trade['strategy'] == 'EMA':
-            self.EMA(trade)
-        elif trade['strategy'] == 'PEMA':
-            self.PEMA(trade)
-        elif trade['strategy'] == 'RF':
-            self.RF(trade)
-        elif trade['strategy'] == 'SSAUTO':
-            self.UTBOT(trade)
-        elif trade['strategy'] == 'SSTRIKE':
-            self.SSTRIKE(trade)
-        elif trade['strategy']=='FRACTALNUBIATIMEHEDGEORDER':
-            self.FRACTALNUBIATIMEHEDGEORDER(trade)
+        try:
+            self._log_strategy_evaluation(trade)
+            if trade['strategy'] == 'SSALGO':
+                self.SSALGO(trade)
+            elif trade['strategy'] == 'EMA':
+                self.EMA(trade)
+            elif trade['strategy'] == 'PEMA':
+                self.PEMA(trade)
+            elif trade['strategy'] == 'RF':
+                self.RF(trade)
+            elif trade['strategy'] == 'SSAUTO':
+                self.UTBOT(trade)
+            elif trade['strategy'] == 'SSTRIKE':
+                self.SSTRIKE(trade)
+            elif trade['strategy']=='FRACTALNUBIATIMEHEDGEORDER':
+                self.FRACTALNUBIATIMEHEDGEORDER(trade)
+        except Exception as exc:
+            self._log_strategy_exception(trade, exc)
+            raise
+
+    def _log_strategy_evaluation(self, trade):
+        trading_event(
+            "strategy_evaluation_started",
+            user=trade.get("user"),
+            strategy_id=trade.get("botcode"),
+            strategy=trade.get("strategy"),
+            symbol=trade.get("symbol"),
+            status=trade.get("status"),
+            position=trade.get("position"),
+            live=trade.get("live"),
+        )
+
+    def _log_strategy_exception(self, trade, exc):
+        trading_exception(
+            "strategy_evaluation_error",
+            exc,
+            user=trade.get("user"),
+            strategy_id=trade.get("botcode"),
+            strategy=trade.get("strategy"),
+            symbol=trade.get("symbol"),
+        )
 
     def _next_entry_id(self):
         return time.time_ns()
@@ -2422,6 +2466,25 @@ class Exchange:
             try:
                 
                 mains = list(self.strategy_collection.find({'$or': [{'status': {'$in': ['opened', 'paused']}}, {'position': 'in'}]}))
+                now = time.monotonic()
+                if now - self._debug_last_feed_log >= 30:
+                    active_symbols = sorted({
+                        str(item.get("symbol"))
+                        for item in mains
+                        if item.get("symbol") and not isinstance(item.get("symbol"), list)
+                    })
+                    trading_event(
+                        "data_feed_status",
+                        strategies_loaded=len(mains),
+                        symbols=active_symbols,
+                        symbols_with_candles=[
+                            symbol for symbol in active_symbols
+                            if symbol in self.dataframes and len(self.dataframes[symbol]) > 0
+                        ],
+                        price_symbols=len(self.prices),
+                        logged_in_users=list(self.userloggedin),
+                    )
+                    self._debug_last_feed_log = now
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     executor.map(self.process_strategy, mains)
@@ -2435,6 +2498,7 @@ class Exchange:
                 if self._shutdown_event.is_set() or 'shutdown' in str(e).lower():
                     break
                 print(f"Error in _datascript: {e}")
+                trading_exception("strategy_loop_error", e, loop="_datascript")
                 if self._shutdown_event.wait(1):
                     break
                 pass
@@ -2488,7 +2552,8 @@ class Exchange:
                 if 'onspot' in list(trade.keys()):
                     symbol=self._symboltransformmonthfut(trade['Expiry'],symbol)
                 if trade['status']=='opened':
-                    if  len(self.dataframes[symbol]) >0:#.empty:
+                    candle_count = len(self.dataframes.get(symbol, []))
+                    if candle_count >0:#.empty:
                         tf='1m'
                         #if self.strategyinputs[trade['strategy']]['update']:
                         #    tf=self.strategyinputs[trade['strategy']]['timeframe']
@@ -2581,6 +2646,33 @@ class Exchange:
                         else:
                             Signal=0
                             exSignal=0
+                        trading_event(
+                            "signal_evaluation",
+                            user=trade.get("user"),
+                            strategy_id=trade.get("botcode"),
+                            strategy=trade.get("strategy"),
+                            symbol=symbol,
+                            timeframe=tf,
+                            candle_count=len(df1),
+                            signal=Signal,
+                            exit_signal=exSignal,
+                            new_signal=trade.get("Newsignal"),
+                            trend_current=trends[-trade['candle1']],
+                            trend_previous=trends[-trade['candle2']],
+                            trend2_current=trends1[-trade['candle1']],
+                            trend2_previous=trends1[-trade['candle2']],
+                            result="signal_generated" if Signal in (1, -1) else "entry_condition_false",
+                        )
+                    else:
+                        trading_event(
+                            "signal_rejected",
+                            user=trade.get("user"),
+                            strategy_id=trade.get("botcode"),
+                            strategy=trade.get("strategy"),
+                            symbol=symbol,
+                            reason="market_data_unavailable",
+                            candle_count=candle_count,
+                        )
                 trade['decision']='intrade'
                 if self.controls[trade['symbol']]['controlmode']:
                     if self.controls[trade['symbol']]['Buytrade'] and (not self.controls[trade['symbol']]['Selltrade']):
@@ -4980,7 +5072,8 @@ class Exchange:
                 if 'onspot' in list(trade.keys()):
                     symbol=self._symboltransformmonthfut(trade['Expiry'],symbol)
                 if trade['status']=='opened':
-                    if  len(self.dataframes[symbol]) >0:#.empty:
+                    candle_count = len(self.dataframes.get(symbol, []))
+                    if candle_count >0:#.empty:
                         tf='1m'
                         if self.strategyinputs[trade['strategy']]['update']:
                             tf=self.strategyinputs[trade['strategy']]['timeframe']
@@ -5056,6 +5149,33 @@ class Exchange:
                         else:
                             Signal=0
                             exSignal=0
+                        trading_event(
+                            "signal_evaluation",
+                            user=trade.get("user"),
+                            strategy_id=trade.get("botcode"),
+                            strategy=trade.get("strategy"),
+                            symbol=symbol,
+                            timeframe=tf,
+                            candle_count=len(df1),
+                            signal=Signal,
+                            exit_signal=exSignal,
+                            new_signal=trade.get("Newsignal"),
+                            trend_current=trends[-trade['candle1']],
+                            trend_previous=trends[-trade['candle2']],
+                            trend2_current=trends1[-trade['candle1']],
+                            trend2_previous=trends1[-trade['candle2']],
+                            result="signal_generated" if Signal in (1, -1) else "entry_condition_false",
+                        )
+                    else:
+                        trading_event(
+                            "signal_rejected",
+                            user=trade.get("user"),
+                            strategy_id=trade.get("botcode"),
+                            strategy=trade.get("strategy"),
+                            symbol=symbol,
+                            reason="market_data_unavailable",
+                            candle_count=candle_count,
+                        )
                 trade['decision']='intrade'
                 if self.controls[trade['symbol']]['controlmode']:
                     if self.controls[trade['symbol']]['Buytrade'] and (not self.controls[trade['symbol']]['Selltrade']):
@@ -5130,6 +5250,14 @@ class Exchange:
             
             except Exception as e:
                 print(f"Error in SSALGO: {e}")
+                trading_exception(
+                    "strategy_evaluation_error",
+                    e,
+                    user=trade.get("user"),
+                    strategy_id=trade.get("botcode"),
+                    strategy=trade.get("strategy"),
+                    symbol=trade.get("symbol"),
+                )
 
     def FBUY(self,trade,OTYPE,Signal):
         try:
@@ -8925,6 +9053,17 @@ class Exchange:
                 f"Broker order failed: user={trade['user']}, broker={broker}, "
                 f"action={action}, symbol={symbol}, qty={quantity}, response={ret}"
             )
+        trading_event(
+            "broker_order_result",
+            user=trade.get("user"),
+            strategy_id=trade.get("botcode"),
+            broker=broker,
+            action=action,
+            symbol=symbol,
+            quantity=quantity,
+            success=result["success"],
+            response=result["response"],
+        )
         return result
 
     def _entry_price_from_broker_results(self, broker_order_results, fallback_price):
@@ -8959,6 +9098,18 @@ class Exchange:
         exch = trade['exch']
         optionlot = int(trade['optionlot'])
         total_quantity = optionlot * quantity
+        trading_event(
+            "broker_order_request",
+            user=trade.get("user"),
+            strategy_id=trade.get("botcode"),
+            broker=selected_broker,
+            symbol=trade.get("optionname"),
+            exchange=trade.get("exch"),
+            transaction_type=transaction_type,
+            product_type=product_type,
+            quantity=total_quantity,
+            live=trade.get("live"),
+        )
         
         ret = None
         
@@ -9045,8 +9196,16 @@ class Exchange:
                 )
                 print(ret)
             except Exception as e:
-                print(f"[ERROR] Order failed but returning True anyway: {e}")
-            ret = True
+                trading_exception(
+                    "broker_order_error",
+                    e,
+                    user=trade.get("user"),
+                    strategy_id=trade.get("botcode"),
+                    broker=selected_broker,
+                    symbol=trade.get("optionname"),
+                    quantity=total_quantity,
+                )
+                raise
         
         elif selected_broker == 'zerodha':
             tradingsymbol = self.kiteSymboldf[

@@ -1,5 +1,6 @@
 from .base import BrokerAdapter
 from app.core.secrets import decrypt_secret_fields
+from app.core.trading_debug import trading_event
 from app.domain.brokers.health import SECRET_FIELD_NAMES
 
 
@@ -73,6 +74,19 @@ class NormalizedLiveBrokerAdapter(BrokerAdapter):
         }
 
     def record_order_result(self, order, normalized, raw_request=None):
+        trading_event(
+            "broker_api_response",
+            user=order.user,
+            broker=self.broker_name,
+            strategy_id=order.strategy_id,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            request=raw_request or {},
+            response=normalized,
+            accepted=bool(normalized.get("success")),
+            rejection_reason="" if normalized.get("success") else normalized.get("message", ""),
+        )
         order_id = None
         if self.order_lifecycle:
             order_id = self.order_lifecycle.create_order(

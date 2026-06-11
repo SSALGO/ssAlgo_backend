@@ -39,6 +39,19 @@ $env:SSLAGO_ENABLE_LEGACY_STRATEGY_ENGINE = "true"
 
 On Windows, `runbot.bat` starts both the trading runtime and the API.
 
+## Trading Debug Mode
+
+Enable structured decision, risk, feed, and broker logs while diagnosing a
+strategy:
+
+```powershell
+$env:DEBUG_TRADING = "true"
+.\venv\Scripts\python.exe -m app.workers.trading_worker_main
+```
+
+Debug logging masks configured credential and token fields. Disable it after
+the investigation because per-strategy decision logs can be verbose.
+
 ## Required Production Secrets
 
 Set these before production startup:

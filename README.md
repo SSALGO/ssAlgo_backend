@@ -27,6 +27,18 @@ winget install -e --id Python.Python.3.12
 .\venv\Scripts\python.exe -m uvicorn app.main_fastapi:app --reload
 ```
 
+## Run Trading Runtime
+
+The API only changes strategy configuration and status. Signal evaluation and
+order execution require the trading runtime in a second process:
+
+```powershell
+$env:SSLAGO_ENABLE_LEGACY_STRATEGY_ENGINE = "true"
+.\venv\Scripts\python.exe -m app.workers.trading_worker_main
+```
+
+On Windows, `runbot.bat` starts both the trading runtime and the API.
+
 ## Required Production Secrets
 
 Set these before production startup:

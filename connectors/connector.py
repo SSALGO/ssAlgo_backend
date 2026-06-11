@@ -1594,7 +1594,8 @@ class Exchange:
             threading.Thread(target=self._positionshold),
             threading.Thread(target=self.run_websocket, daemon=True),
             threading.Thread(target=self._datascript),
-            #threading.Thread(target=self.equityhisrun),
+            threading.Thread(target=self._dataequityscript),
+            threading.Thread(target=self._dataorderscript),
             threading.Thread(target=self._stopnotsubusers),
         ]
         
@@ -2392,7 +2393,8 @@ class Exchange:
         now=datetime.datetime.now()
         midnight = now.replace(hour=0, minute=1, second=0, microsecond=0)
         self.timestamp = int(midnight.timestamp())
-        self.api.subscribe(self.subscribe_list)
+        if self.api is not None and hasattr(self.api, "subscribe"):
+            self.api.subscribe(self.subscribe_list)
         while True:
             try:
                 #print(self.prices)
@@ -2414,7 +2416,8 @@ class Exchange:
 
     def _datascript(self):
         
-        self.api.subscribe(self.subscribe_list)
+        if self.api is not None and hasattr(self.api, "subscribe"):
+            self.api.subscribe(self.subscribe_list)
         while not self._shutdown_event.is_set():
             try:
                 

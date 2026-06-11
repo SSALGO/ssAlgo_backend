@@ -186,8 +186,15 @@ class DeferredTrader:
         self._ready = threading.Event()
         self._trader = None
         self._error = None
+        self._started = False
 
     def initialize(self, factory):
+        if self._trader is not None:
+            return
+        self._started = True
+        self._ready.clear()
+        self._error = None
+
         def _runner():
             try:
                 trader_instance = factory()
@@ -202,8 +209,18 @@ class DeferredTrader:
         threading.Thread(target=_runner, daemon=True).start()
 
     def mark_unavailable(self, exc):
+        self._started = True
         self._error = exc
         self._ready.set()
+
+    def status(self):
+        if self._trader is not None:
+            return {"state": "running", "error": ""}
+        if self._error is not None:
+            return {"state": "failed", "error": str(self._error)}
+        if self._started and not self._ready.is_set():
+            return {"state": "starting", "error": ""}
+        return {"state": "stopped", "error": ""}
 
     def wait_ready(self, timeout=None):
         return self._ready.wait(timeout)
@@ -221,17 +238,39 @@ sessionusertoken = None
 
 trader = DeferredTrader()
 
-if _env_bool("SSLAGO_ENABLE_TRADER_ON_IMPORT", False):
+def start_trader():
+    """Start the legacy market-data and strategy evaluator exactly once."""
+    if trader.status()["state"] in {"running", "starting"}:
+        return trader
+
     try:
         from connectors.connector import Exchange
 
-        get_database()
-        api, api1, sessionusertoken = create_shoonya_session()
+        database = get_database()
+        if database is None:
+            raise RuntimeError("MongoDB is unavailable")
+
+        shoonya_api = None
+        shoonya_reapi = None
+        shoonya_session_token = None
+        try:
+            shoonya_api, shoonya_reapi, shoonya_session_token = create_shoonya_session()
+        except RuntimeError as exc:
+            logging.info("Shoonya bootstrap skipped: %s", exc)
     except Exception as exc:
         trader.mark_unavailable(exc)
     else:
-        trader.initialize(lambda: Exchange(api, db, cred, api1, sessionusertoken))
-else:
-    trader.mark_unavailable(
-        RuntimeError("Trader import-time initialization is disabled by SSLAGO_ENABLE_TRADER_ON_IMPORT")
-    )
+        trader.initialize(
+            lambda: Exchange(
+                shoonya_api,
+                database,
+                cred,
+                shoonya_reapi,
+                shoonya_session_token,
+            )
+        )
+    return trader
+
+
+if _env_bool("SSLAGO_ENABLE_TRADER_ON_IMPORT", False):
+    start_trader()

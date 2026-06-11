@@ -5,6 +5,7 @@ import time
 from app.core.trading_debug import trading_event, trading_exception
 from app.domain.brokers.adapters import BrokerAdapterFactory, BrokerCredentials, BrokerOrder
 from app.domain.brokers.health import BrokerHealthService
+from app.domain.brokers.registry import normalize_broker_id
 from app.domain.audit.service import AuditLogService
 from app.domain.orders.lifecycle import OrderLifecycleService
 from app.domain.risk.service import RiskControlService
@@ -55,6 +56,18 @@ class TradingWorker:
             return []
         rows = []
         seen = set()
+        active_users = None
+        if not user:
+            active_users = {
+                strategy.get("user")
+                for strategy in self.db["strategies"].find({
+                    "$or": [
+                        {"status": {"$in": ["opened", "paused"]}},
+                        {"position": "in"},
+                    ]
+                })
+                if strategy.get("user")
+            }
         query = {"$or": [
             {"selectedbroker": {"$exists": True, "$ne": ""}},
             {"selected_broker": {"$exists": True, "$ne": ""}},
@@ -63,9 +76,12 @@ class TradingWorker:
             query["user"] = user
         for selected in self.db["broker"].find(query):
             api_user = selected.get("user")
-            api_broker = selected.get("selectedbroker") or selected.get("selected_broker")
-            api_broker = str(api_broker or "").strip().lower()
-            if broker and api_broker != str(broker).strip().lower():
+            if active_users is not None and api_user not in active_users:
+                continue
+            api_broker = normalize_broker_id(
+                selected.get("selectedbroker") or selected.get("selected_broker")
+            )
+            if broker and api_broker != normalize_broker_id(broker):
                 continue
             pair = (api_user, api_broker)
             if api_user and api_broker and pair not in seen:

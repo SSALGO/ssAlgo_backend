@@ -48,6 +48,8 @@ def test_log_sanitizer_masks_camel_case_broker_session():
 def test_worker_refreshes_only_explicitly_selected_brokers(fake_db):
     fake_db["broker"].insert_one({"user": "alice", "selectedbroker": "aliceblue"})
     fake_db["broker"].insert_one({"user": "bob", "selectedbroker": "paper"})
+    fake_db["strategies"].insert_one({"user": "alice", "status": "opened"})
+    fake_db["strategies"].insert_one({"user": "bob", "position": "in"})
     fake_db["apis"].insert_one({"user": "alice", "broker": "aliceblue"})
     fake_db["apis"].insert_one({"user": "alice", "broker": "dhan"})
     fake_db["apis"].insert_one({"user": "charlie", "broker": "fyers"})
@@ -57,6 +59,28 @@ def test_worker_refreshes_only_explicitly_selected_brokers(fake_db):
     assert worker._users_with_broker_credentials() == [
         ("alice", "aliceblue"),
         ("bob", "paper"),
+    ]
+
+
+def test_worker_automatic_login_ignores_users_without_active_strategies(fake_db):
+    fake_db["broker"].insert_one({"user": "active", "selectedbroker": "aliceblue"})
+    fake_db["broker"].insert_one({"user": "inactive", "selectedbroker": "dhan"})
+    fake_db["strategies"].insert_one({"user": "active", "status": "opened"})
+    fake_db["strategies"].insert_one({"user": "inactive", "status": "closed"})
+
+    worker = TradingWorker(db=fake_db)
+
+    assert worker._users_with_broker_credentials() == [("active", "aliceblue")]
+
+
+def test_worker_normalizes_selected_broker_alias(fake_db):
+    fake_db["broker"].insert_one({"user": "alice", "selectedbroker": "delta"})
+    fake_db["strategies"].insert_one({"user": "alice", "status": "opened"})
+
+    worker = TradingWorker(db=fake_db)
+
+    assert worker._users_with_broker_credentials() == [
+        ("alice", "delta_exchange_india"),
     ]
 
 

@@ -42,6 +42,13 @@ ALICEBLUE_DNS_HOSTS = {
 }
 
 
+def _env_bool(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def install_aliceblue_dns_fallback():
     original_getaddrinfo = socket.getaddrinfo
     cache = {}
@@ -523,27 +530,58 @@ class Exchange:
         self.mstock = {}
         self.testmode=False
         self._debug_last_feed_log = 0
+        self._debug_strategy_eval_log_times = {}
         self.sessionusertoken=sessionusertoken
         trading_event("strategy_engine_stage", force=True, stage="remote_instrument_masters")
-        self.tokdf=pd.read_csv('https://developers.stocknote.com/doc/ScripMaster.csv')
-        self.upstoxsymbolmaster=pd.read_json('https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz') 
-        self.samlist=list(self.tokdf['symbolCode'])
+        self.tokdf = pd.DataFrame(columns=['symbolCode'])
+        self.upstoxsymbolmaster = pd.DataFrame()
+        self.samlist = []
+        self.kiteSymboldf = pd.DataFrame(
+            columns=['exchange', 'exchange_token', 'tradingsymbol']
+        )
+        fyers_columns = ['exchangeName', 'exToken', 'exSymName']
+        self.Fyers_NSE = pd.DataFrame(columns=fyers_columns)
+        self.Fyers_BSE = pd.DataFrame(columns=fyers_columns)
+        self.Fyers_MCX = pd.DataFrame(columns=fyers_columns)
+        self.angelone_scripts = pd.DataFrame(
+            columns=['exch_seg', 'token', 'symbol']
+        )
 
-        self.kiteSymboldf=pd.read_csv('https://api.kite.trade/instruments')
-        #self.Fyers_NSE=pd.concat([pd.read_json('https://public.fyers.in/sym_details/NSE_FO_sym_master.json').T,pd.read_json('https://public.fyers.in/sym_details/NSE_CM_sym_master.json').T])
-        #self.Fyers_BSE=pd.concat([pd.read_json('https://public.fyers.in/sym_details/BSE_FO_sym_master.json').T,pd.read_json('https://public.fyers.in/sym_details/BSE_CM_sym_master.json').T])
-        #self.Fyers_MCX=pd.read_json('https://public.fyers.in/sym_details/MCX_COM_sym_master.json').T
-        self.Fyers_NSE = pd.concat([next((pd.read_json(u).T for _ in [0] if True), pd.DataFrame()) if not isinstance(u, Exception) else pd.DataFrame() for u in ['https://public.fyers.in/sym_details/NSE_FO_sym_master.json', 'https://public.fyers.in/sym_details/NSE_CM_sym_master.json']], ignore_index=True)
-
-        self.Fyers_BSE = pd.concat([next((pd.read_json(u).T for _ in [0] if True), pd.DataFrame()) if not isinstance(u, Exception) else pd.DataFrame() for u in ['https://public.fyers.in/sym_details/BSE_FO_sym_master.json', 'https://public.fyers.in/sym_details/BSE_CM_sym_master.json']], ignore_index=True)
-
-        self.Fyers_MCX = next((pd.read_json('https://public.fyers.in/sym_details/MCX_COM_sym_master.json').T for _ in [0]), pd.DataFrame())
-
-        try:
-            self.angelone_scripts = pd.read_json('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json')#pd.read_json('https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json')
-        except Exception as e:
-            print("Failed to load AngelOne script master:", e)
-            self.angelone_scripts = pd.DataFrame()
+        if _env_bool("SSLAGO_LOAD_OPTIONAL_BROKER_MASTERS", False):
+            trading_event(
+                "strategy_engine_stage",
+                force=True,
+                stage="optional_broker_masters_enabled",
+            )
+            self.kiteSymboldf = pd.read_csv('https://api.kite.trade/instruments')
+            self.Fyers_NSE = pd.concat([
+                pd.read_json(url).T
+                for url in (
+                    'https://public.fyers.in/sym_details/NSE_FO_sym_master.json',
+                    'https://public.fyers.in/sym_details/NSE_CM_sym_master.json',
+                )
+            ], ignore_index=True)
+            self.Fyers_BSE = pd.concat([
+                pd.read_json(url).T
+                for url in (
+                    'https://public.fyers.in/sym_details/BSE_FO_sym_master.json',
+                    'https://public.fyers.in/sym_details/BSE_CM_sym_master.json',
+                )
+            ], ignore_index=True)
+            self.Fyers_MCX = pd.read_json(
+                'https://public.fyers.in/sym_details/MCX_COM_sym_master.json'
+            ).T
+            self.angelone_scripts = pd.read_json(
+                'https://margincalculator.angelbroking.com/'
+                'OpenAPI_File/files/OpenAPIScripMaster.json'
+            )
+        else:
+            trading_event(
+                "strategy_engine_stage",
+                force=True,
+                stage="optional_broker_masters_skipped",
+                reason="aliceblue_first_startup",
+            )
         trading_event("strategy_engine_stage", force=True, stage="local_contract_masters")
         self.orders_collection = self.db["orders"]
         self.users_collection = self.db["users"]
@@ -2424,15 +2462,48 @@ class Exchange:
             raise
 
     def _log_strategy_evaluation(self, trade):
+        status = str(trade.get("status") or "").strip().lower()
+        if status != "opened" and not _env_bool(
+            "DEBUG_TRADING_VERBOSE_EVALUATION",
+            False,
+        ):
+            return
+
+        strategy_id = str(
+            trade.get("botcode")
+            or trade.get("_id")
+            or f"{trade.get('user')}:{trade.get('strategy')}"
+        )
+        now = time.monotonic()
+        interval = max(
+            1,
+            int(os.getenv("DEBUG_TRADING_EVALUATION_INTERVAL_SECONDS", "60")),
+        )
+        if (
+            not _env_bool("DEBUG_TRADING_VERBOSE_EVALUATION", False)
+            and now - self._debug_strategy_eval_log_times.get(strategy_id, 0) < interval
+        ):
+            return
+        self._debug_strategy_eval_log_times[strategy_id] = now
+
+        symbols = trade.get("symbol")
+        symbol_details = {}
+        if isinstance(symbols, list):
+            symbol_details = {
+                "symbol_count": len(symbols),
+                "symbol_sample": symbols[:5],
+            }
+        else:
+            symbol_details = {"symbol": symbols}
         trading_event(
             "strategy_evaluation_started",
             user=trade.get("user"),
-            strategy_id=trade.get("botcode"),
+            strategy_id=strategy_id,
             strategy=trade.get("strategy"),
-            symbol=trade.get("symbol"),
-            status=trade.get("status"),
+            status=status,
             position=trade.get("position"),
             live=trade.get("live"),
+            **symbol_details,
         )
 
     def _log_strategy_exception(self, trade, exc):
@@ -10489,20 +10560,38 @@ class Exchange:
                        'CDS_symbols.txt.zip', 'MCX_symbols.txt.zip']
 
             for zip_file in masters:
+                target_file = zip_file.removesuffix('.zip')
+                if os.path.exists(target_file) and not _env_bool(
+                    "SSLAGO_REFRESH_CONTRACT_MASTERS",
+                    False,
+                ):
+                    trading_event(
+                        "contract_master_result",
+                        force=True,
+                        file=target_file,
+                        source="existing",
+                    )
+                    continue
                 print(f'downloading {zip_file}')
                 url = root + zip_file
-                r = requests.get(url, allow_redirects=True)
-                open(zip_file, 'wb').write(r.content)
-                file_to_extract = zip_file.split()
+                r = requests.get(url, allow_redirects=True, timeout=30)
+                r.raise_for_status()
+                with open(zip_file, 'wb') as handle:
+                    handle.write(r.content)
 
                 try:
                     with zipfile.ZipFile(zip_file) as z:
                         z.extractall()
                         print("Extracted: ", zip_file)
-                except:
-                    print("Invalid file")
-
-                os.remove(zip_file)
+                    trading_event(
+                        "contract_master_result",
+                        force=True,
+                        file=target_file,
+                        source="download",
+                    )
+                finally:
+                    if os.path.exists(zip_file):
+                        os.remove(zip_file)
 
         Nse = pd.read_csv('NSE_symbols.txt')
         Nse = Nse.iloc[:, :-1]

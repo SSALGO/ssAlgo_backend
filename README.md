@@ -52,6 +52,9 @@ $env:DEBUG_TRADING = "true"
 Debug logging masks configured credential and token fields. Disable it after
 the investigation because per-strategy decision logs can be verbose.
 
+Logs are written to `logs/trading_debug.log` and also printed in the trading
+worker console. Override the file path with `DEBUG_TRADING_LOG_FILE`.
+
 ## Required Production Secrets
 
 Set these before production startup:

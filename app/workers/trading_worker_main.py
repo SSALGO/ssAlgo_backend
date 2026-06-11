@@ -4,6 +4,8 @@ import signal
 import time
 
 from app.core.database import get_database
+from app.core.logging_config import configure_logging
+from app.core.trading_debug import configure_trading_debug_logging
 from app.domain.brokers.health import BrokerHealthService
 from app.workers.trading_worker import TradingWorker
 
@@ -19,6 +21,9 @@ def _env_bool(name, default=False):
 
 
 def main():
+    configure_logging()
+    if _env_bool("DEBUG_TRADING", False) or _env_bool("SSLAGO_DEBUG_TRADING", False):
+        configure_trading_debug_logging()
     db = get_database()
     worker = TradingWorker(db=db, health_service=BrokerHealthService(db))
     strategy_runtime = None

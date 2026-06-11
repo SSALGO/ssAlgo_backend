@@ -10,6 +10,8 @@ from urllib.parse import parse_qs, urlparse
 import pymongo
 import pyotp
 import requests
+
+from app.core.config import AppConfig
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -239,8 +241,8 @@ def get_user_session(alice_user_id, auth_code, app_secret, timeout=20):
 def main():
     parser = argparse.ArgumentParser(description="Headless AliceBlue web login plus Ant-A3 API session login.")
     parser.add_argument("--user", default="kinguniverse129", help="Application username.")
-    parser.add_argument("--mongo-uri", default="mongodb://localhost:27017", help="MongoDB URI.")
-    parser.add_argument("--db", default="demo", help="MongoDB database name.")
+    parser.add_argument("--mongo-uri", default=AppConfig.MONGO_URI, help="MongoDB URI.")
+    parser.add_argument("--db", default=AppConfig.MONGO_DB, help="MongoDB database name.")
     parser.add_argument("--app-code", default=os.getenv("ALICEBLUE_APP_CODE"), help="AliceBlue App Key/App Code.")
     parser.add_argument("--app-secret", default=os.getenv("ALICEBLUE_APP_SECRET"), help="AliceBlue App Secret Key.")
     parser.add_argument("--alice-user-id", default=os.getenv("ALICEBLUE_USER_ID"), help="AliceBlue login user ID.")

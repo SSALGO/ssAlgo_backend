@@ -170,12 +170,28 @@ class RiskControlService:
             return None
         return self._coerce_datetime(row.get("updated_at") or row.get("last_quote_time") or row.get("timestamp"))
 
+    def _position_close_timestamp(self, row: dict) -> int | None:
+        for key in ("exittime", "time", "closed_at", "updated_at"):
+            value = row.get(key)
+            if value is None:
+                continue
+            if isinstance(value, datetime.datetime):
+                return int(value.timestamp())
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
     def _realized_pnl_today(self, user: str) -> float:
         if self.db is None:
             return 0.0
         total = 0.0
         start_ts = int(self._today_start().timestamp())
-        for row in self.db["Opositions"].find({"user": user, "status": "close", "time": {"$gte": start_ts}}):
+        for row in self.db["Opositions"].find({"user": user, "status": "close"}):
+            close_ts = self._position_close_timestamp(row)
+            if close_ts is None or close_ts < start_ts:
+                continue
             try:
                 total += float(row.get("pnl") or 0)
             except (TypeError, ValueError):
@@ -222,7 +238,10 @@ class RiskControlService:
             return 0.0
         total = 0.0
         start_ts = int(self._today_start().timestamp())
-        for row in self.db["Opositions"].find({"user": user, "botcode": strategy_id, "status": "close", "time": {"$gte": start_ts}}):
+        for row in self.db["Opositions"].find({"user": user, "botcode": strategy_id, "status": "close"}):
+            close_ts = self._position_close_timestamp(row)
+            if close_ts is None or close_ts < start_ts:
+                continue
             try:
                 total += float(row.get("pnl") or 0)
             except (TypeError, ValueError):

@@ -32,6 +32,7 @@ from typing import *
 import typing
 import requests
 
+from app.core.config import AppConfig
 from app.core.trading_debug import trading_event, trading_exception
 from app.core.secrets import decrypt_secret, decrypt_secret_fields
 from app.domain.brokers.health import SECRET_FIELD_NAMES
@@ -1209,7 +1210,17 @@ class Exchange:
 
         try:
             result = subprocess.run(
-                [sys.executable, script_path, '--user', user, '--save'],
+                [
+                    sys.executable,
+                    script_path,
+                    '--user',
+                    user,
+                    '--save',
+                    '--mongo-uri',
+                    AppConfig.MONGO_URI,
+                    '--db',
+                    AppConfig.MONGO_DB,
+                ],
                 cwd=os.getcwd(),
                 capture_output=True,
                 text=True,
@@ -2561,6 +2572,18 @@ class Exchange:
     def _next_entry_id(self):
         return time.time_ns()
 
+    def _admin_control_for_symbol(self, symbol):
+        control = self.controls.get(symbol)
+        if not control:
+            return {"controlmode": False, "Buytrade": False, "Selltrade": False}
+        return control
+
+    def _market_dataframe(self, symbol):
+        data = self.dataframes.get(symbol, [])
+        if isinstance(data, list):
+            return pd.DataFrame(data)
+        return data
+
     def _dataorderscript(self):
         
         #self.api.subscribe(self.subscribe_list)
@@ -2727,14 +2750,15 @@ class Exchange:
                 if 'onspot' in list(trade.keys()):
                     symbol=self._symboltransformmonthfut(trade['Expiry'],symbol)
                 if trade['status']=='opened':
-                    candle_count = len(self.dataframes.get(symbol, []))
+                    candle_data = self._market_dataframe(symbol)
+                    candle_count = len(candle_data)
                     if candle_count >0:#.empty:
                         tf='1m'
                         #if self.strategyinputs[trade['strategy']]['update']:
                         #    tf=self.strategyinputs[trade['strategy']]['timeframe']
                         #else:
                         tf=trade['timeframe']
-                        df=self.dataframes[symbol].iloc[-self.candleswitch[tf]:]
+                        df=candle_data.iloc[-self.candleswitch[tf]:]
                         df['date']=pd.to_datetime(df['time'],format='%d-%m-%Y %H:%M:%S')#+pd.to_timedelta(1,'minutes')
                         df['dates']=df['date'].dt.date
                         df['weekday']=df['date'].dt.weekday
@@ -2849,12 +2873,13 @@ class Exchange:
                             candle_count=candle_count,
                         )
                 trade['decision']='intrade'
-                if self.controls[trade['symbol']]['controlmode']:
-                    if self.controls[trade['symbol']]['Buytrade'] and (not self.controls[trade['symbol']]['Selltrade']):
+                symbol_control = self._admin_control_for_symbol(trade['symbol'])
+                if symbol_control['controlmode']:
+                    if symbol_control['Buytrade'] and (not symbol_control['Selltrade']):
                         trade['decision']='intrade'
                         Signal=1
                         exSignal=1
-                    elif self.controls[trade['symbol']]['Selltrade'] and (not self.controls[trade['symbol']]['Buytrade']):
+                    elif symbol_control['Selltrade'] and (not symbol_control['Buytrade']):
                         trade['decision']='intrade'
                         Signal=-1
                         exSignal=-1
@@ -2921,7 +2946,7 @@ class Exchange:
                     
             
             except Exception as e:
-                print(f"Error in SSTRIKE: {e}")
+                self._log_strategy_exception(trade, e)
 
 
 
@@ -3308,7 +3333,9 @@ class Exchange:
                 if trade['status']=='opened':
                     #if trade['user']=='kinguniverse129':        
                     #    print('0 ema')
-                    if  len(self.dataframes[symbol]) >0:#.empty:
+                    candle_data = self._market_dataframe(symbol)
+                    candle_count = len(candle_data)
+                    if candle_count >0:#.empty:
                         tf='1m'
                         #print(self.strategyinputs[trade['strategy']]['update'])
                         #print()
@@ -3316,7 +3343,7 @@ class Exchange:
                             tf=self.strategyinputs[trade['strategy']]['timeframe']
                         else:
                             tf=trade['timeframe']
-                        df=self.dataframes[symbol].iloc[-self.candleswitch[tf]:]
+                        df=candle_data.iloc[-self.candleswitch[tf]:]
 
 
                         df['date']=pd.to_datetime(df['time'],format='%d-%m-%Y %H:%M:%S')#+pd.to_timedelta(1,'minutes')
@@ -3398,18 +3425,24 @@ class Exchange:
                         else:
                             Signal=0
                             exSignal=0
+                    else:
+                        trading_event(
+                            "signal_rejected",
+                            user=trade.get("user"),
+                            strategy_id=trade.get("botcode"),
+                            strategy=trade.get("strategy"),
+                            symbol=symbol,
+                            reason="market_data_unavailable",
+                            candle_count=candle_count,
+                        )
                 trade['decision']='intrade'
-                #if trade['user']=='kinguniverse129':        
-                #    print('2 ema')
-                    #print(trade['symbol'])
-                    #print(self.controls)
-                    #print(self.controls[trade['symbol']])
-                if self.controls[trade['symbol']]['controlmode']:
-                    if self.controls[trade['symbol']]['Buytrade'] and (not self.controls[trade['symbol']]['Selltrade']):
+                symbol_control = self._admin_control_for_symbol(trade['symbol'])
+                if symbol_control['controlmode']:
+                    if symbol_control['Buytrade'] and (not symbol_control['Selltrade']):
                         trade['decision']='intrade'
                         Signal=1
                         exSignal=1
-                    elif self.controls[trade['symbol']]['Selltrade'] and (not self.controls[trade['symbol']]['Buytrade']):
+                    elif symbol_control['Selltrade'] and (not symbol_control['Buytrade']):
                         trade['decision']='intrade'
                         Signal=-1
                         exSignal=-1
@@ -3485,7 +3518,7 @@ class Exchange:
                     
             
             except Exception as e:
-                print(f"Error in EMA: {e} {trade}")                
+                self._log_strategy_exception(trade, e)
     def PEMA(self,trade):
         #signal-1 for buy -1 for sell
         if self.testmode or ((trade['user'] in self.userloggedin) and (datetime.date.today().weekday() < self.marketdays)):
@@ -3575,12 +3608,13 @@ class Exchange:
                             exSignal=0
                 trade['decision']='intrade'
 
-                if self.controls[trade['symbol']]['controlmode']:
-                    if self.controls[trade['symbol']]['Buytrade'] and (not self.controls[trade['symbol']]['Selltrade']):
+                symbol_control = self._admin_control_for_symbol(trade['symbol'])
+                if symbol_control['controlmode']:
+                    if symbol_control['Buytrade'] and (not symbol_control['Selltrade']):
                         trade['decision']='intrade'
                         Signal=1
                         exSignal=1
-                    elif self.controls[trade['symbol']]['Selltrade'] and (not self.controls[trade['symbol']]['Buytrade']):
+                    elif symbol_control['Selltrade'] and (not symbol_control['Buytrade']):
                         trade['decision']='intrade'
                         Signal=-1
                         exSignal=-1
@@ -5008,12 +5042,13 @@ class Exchange:
 
                 #print('stage5')
                 trade['decision']='intrade'
-                if self.controls[trade['symbol']]['controlmode']:
-                    if self.controls[trade['symbol']]['Buytrade'] and (not self.controls[trade['symbol']]['Selltrade']):
+                symbol_control = self._admin_control_for_symbol(trade['symbol'])
+                if symbol_control['controlmode']:
+                    if symbol_control['Buytrade'] and (not symbol_control['Selltrade']):
                         trade['decision']='intrade'
                         Signal=1
                         exSignal=1
-                    elif self.controls[trade['symbol']]['Selltrade'] and (not self.controls[trade['symbol']]['Buytrade']):
+                    elif symbol_control['Selltrade'] and (not symbol_control['Buytrade']):
                         trade['decision']='intrade'
                         Signal=-1
                         exSignal=-1
@@ -5169,12 +5204,13 @@ class Exchange:
                             Signal=0
                             exSignal=0
                 trade['decision']='intrade'
-                if self.controls[trade['symbol']]['controlmode']:
-                    if self.controls[trade['symbol']]['Buytrade'] and (not self.controls[trade['symbol']]['Selltrade']):
+                symbol_control = self._admin_control_for_symbol(trade['symbol'])
+                if symbol_control['controlmode']:
+                    if symbol_control['Buytrade'] and (not symbol_control['Selltrade']):
                         trade['decision']='intrade'
                         Signal=1
                         exSignal=1
-                    elif self.controls[trade['symbol']]['Selltrade'] and (not self.controls[trade['symbol']]['Buytrade']):
+                    elif symbol_control['Selltrade'] and (not symbol_control['Buytrade']):
                         trade['decision']='intrade'
                         Signal=-1
                         exSignal=-1
@@ -5352,12 +5388,13 @@ class Exchange:
                             candle_count=candle_count,
                         )
                 trade['decision']='intrade'
-                if self.controls[trade['symbol']]['controlmode']:
-                    if self.controls[trade['symbol']]['Buytrade'] and (not self.controls[trade['symbol']]['Selltrade']):
+                symbol_control = self._admin_control_for_symbol(trade['symbol'])
+                if symbol_control['controlmode']:
+                    if symbol_control['Buytrade'] and (not symbol_control['Selltrade']):
                         trade['decision']='intrade'
                         Signal=1
                         exSignal=1
-                    elif self.controls[trade['symbol']]['Selltrade'] and (not self.controls[trade['symbol']]['Buytrade']):
+                    elif symbol_control['Selltrade'] and (not symbol_control['Buytrade']):
                         trade['decision']='intrade'
                         Signal=-1
                         exSignal=-1

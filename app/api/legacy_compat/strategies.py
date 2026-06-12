@@ -1,5 +1,6 @@
 from app.api.legacy_compat.common import *
 from app.core.trading_debug import trading_event
+from app.domain.brokers.health import BrokerHealthService
 from app.workers.control import WorkerControlService
 
 
@@ -162,7 +163,9 @@ async def api_stop_ssalgo(request: Request, user=Depends(get_current_user)):
 async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
     payload = await payload_from_request(request)
     botcode = form_value(payload, "id") or form_value(payload, "botcode")
-    runtime = WorkerControlService(get_database()).get_status()
+    db = get_database()
+    username = current_username(user)
+    runtime = WorkerControlService(db).get_status()
     runtime_ready = runtime.get("healthy") is True and runtime.get("strategy_engine") == "running"
     if not runtime_ready:
         trading_event(
@@ -177,13 +180,55 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Trading runtime is not running. Start the trading worker before starting strategies.",
         )
+    strategy = db["strategies"].find_one(
+        {"botcode": botcode, "user": username}
+    )
+    if not strategy:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Strategy not found",
+        )
+
+    if bool(strategy.get("live")):
+        broker_health_service = BrokerHealthService(db)
+        selected_broker = broker_health_service.active_broker(username)
+        selected_health = broker_health_service.get_health(
+            username, selected_broker
+        )
+        live_blockers = []
+        if selected_broker == "paper":
+            live_blockers.append("Select a live broker")
+        if selected_health.get("login_status") != "connected":
+            live_blockers.append("Broker login is not connected")
+        if selected_health.get("websocket_status") != "connected":
+            live_blockers.append("Broker market-data websocket is not connected")
+        if live_blockers:
+            trading_event(
+                "strategy_start_rejected",
+                user=username,
+                strategy_id=botcode,
+                force=True,
+                reason="live_broker_not_ready",
+                broker=selected_broker,
+                broker_health=selected_health,
+                blockers=live_blockers,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "Live broker is not ready",
+                    "broker": selected_broker,
+                    "blockers": live_blockers,
+                },
+            )
+
     result = collection("strategies").update_one(
-        {"botcode": botcode, "user": current_username(user)},
-        fractal_reset_update(botcode, current_username(user), {"status": "opened"}),
+        {"botcode": botcode, "user": username},
+        fractal_reset_update(botcode, username, {"status": "opened"}),
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
-    strategy = collection("strategies").find_one({"botcode": botcode, "user": current_username(user)}) or {}
+    strategy = collection("strategies").find_one({"botcode": botcode, "user": username}) or {}
     details = {
         "strategy": strategy.get("strategy"),
         "symbol": strategy.get("symbol"),

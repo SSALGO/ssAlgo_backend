@@ -3457,6 +3457,27 @@ class Exchange:
                         else:
                             Signal=0
                             exSignal=0
+                        trading_event(
+                            "signal_evaluation",
+                            user=trade.get("user"),
+                            strategy_id=trade.get("botcode"),
+                            strategy=trade.get("strategy"),
+                            symbol=symbol,
+                            timeframe=tf,
+                            candle_count=len(df1),
+                            signal=Signal,
+                            exit_signal=exSignal,
+                            new_signal=trade.get("Newsignal"),
+                            short_ema=float(df1['short'].iloc[-1]),
+                            long_ema=float(df1['long'].iloc[-1]),
+                            trend_current=trends[-trade['candle1']],
+                            trend_previous=trends[-trade['candle2']],
+                            result=(
+                                "signal_generated"
+                                if Signal in (1, -1)
+                                else "entry_condition_false"
+                            ),
+                        )
                     else:
                         trading_event(
                             "signal_rejected",
@@ -3493,9 +3514,91 @@ class Exchange:
                             #print('Hello')
                             self.FEXIT(trade,Signal)
 
-                    if  trade['position']=='out' and trade['status']=='opened' and trade['timetowait'] <= int(datetime.datetime.now().timestamp()):
+                    now_timestamp = int(datetime.datetime.now().timestamp())
+                    wait_elapsed = trade['timetowait'] <= now_timestamp
+                    if trade['position'] == 'out' and trade['status'] == 'opened':
+                        entry_intraday = (
+                            datetime.datetime.now().time()
+                            > datetime.datetime.strptime(
+                                trade['StartTime'], '%H:%M'
+                            ).time()
+                            and datetime.datetime.now().time()
+                            < datetime.datetime.strptime(
+                                trade['ExitTime'], '%H:%M'
+                            ).time()
+                            and trade['Intraday']
+                            and datetime.date.today().weekday() < self.marketdays
+                        )
+                        entry_positional = (
+                            datetime.datetime.now().time()
+                            > datetime.datetime.strptime(
+                                trade['StartTime'], '%H:%M'
+                            ).time()
+                            and datetime.datetime.now().time()
+                            < datetime.datetime.strptime(
+                                trade['ExitTime'], '%H:%M'
+                            ).time()
+                            and not trade['Intraday']
+                            and datetime.date.today().weekday() < self.marketdays
+                        )
+                        trading_event(
+                            "entry_gate_evaluation",
+                            user=trade.get("user"),
+                            strategy_id=trade.get("botcode"),
+                            strategy=trade.get("strategy"),
+                            symbol=trade.get("symbol"),
+                            signal=Signal,
+                            position=trade.get("position"),
+                            status=trade.get("status"),
+                            time_window_open=bool(
+                                entry_intraday
+                                or entry_positional
+                                or self.testmode
+                            ),
+                            wait_elapsed=wait_elapsed,
+                            timetowait=trade.get("timetowait"),
+                            now_timestamp=now_timestamp,
+                            broker=self._selected_broker_for_user(
+                                trade.get("user")
+                            ),
+                            live=trade.get("live"),
+                            price_symbols=len(self.prices),
+                            result=(
+                                "ready_to_place_order"
+                                if wait_elapsed
+                                and (
+                                    entry_intraday
+                                    or entry_positional
+                                    or self.testmode
+                                )
+                                and Signal in (1, -1)
+                                else "blocked_before_order"
+                            ),
+                        )
+                    if  trade['position']=='out' and trade['status']=='opened' and wait_elapsed:
                         Intraday= (datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
                         positional=(datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and not trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
+                        trading_event(
+                            "entry_gate_evaluation",
+                            user=trade.get("user"),
+                            strategy_id=trade.get("botcode"),
+                            strategy=trade.get("strategy"),
+                            symbol=trade.get("symbol"),
+                            signal=Signal,
+                            position=trade.get("position"),
+                            status=trade.get("status"),
+                            time_window_open=bool(Intraday or positional or self.testmode),
+                            timetowait=trade.get("timetowait"),
+                            now_timestamp=int(datetime.datetime.now().timestamp()),
+                            broker=self._selected_broker_for_user(trade.get("user")),
+                            live=trade.get("live"),
+                            result=(
+                                "ready_to_place_order"
+                                if (Intraday or positional or self.testmode)
+                                and Signal in (1, -1)
+                                else "blocked_before_order"
+                            ),
+                        )
                         if Intraday or positional or self.testmode:
                             if Signal==1:
                                 print(trade)
@@ -7343,6 +7446,35 @@ class Exchange:
             print("i am goee")
 
         except Exception as e:
+            error_text = str(e)
+            self.strategy_collection.update_one(
+                {
+                    'botcode': trade.get('botcode'),
+                    'user': trade.get('user'),
+                },
+                {
+                    '$set': {
+                        'position': 'out',
+                        'entry_order_state': 'preflight_failed',
+                        'last_broker_order_error': error_text,
+                        'last_broker_order_error_time': int(
+                            datetime.datetime.now().timestamp()
+                        ),
+                    }
+                },
+            )
+            trading_exception(
+                "option_entry_order_failed",
+                e,
+                user=trade.get("user"),
+                strategy_id=trade.get("botcode"),
+                strategy=trade.get("strategy"),
+                symbol=trade.get("symbol"),
+                selected_broker=self._selected_broker_for_user(
+                    trade.get("user")
+                ),
+                entry_order_state=trade.get("entry_order_state"),
+            )
             print(f"Error in OBUY: {e}")
         
         
@@ -8829,11 +8961,39 @@ class Exchange:
                 market_depth=True
             )
             self.aliceblue_depth_started.add(user)
+            self.db["broker_health"].update_one(
+                {"user": user, "broker": "aliceblue"},
+                {
+                    "$set": {
+                        "websocket_status": "connected",
+                        "last_error": "",
+                        "updated_at": datetime.datetime.utcnow(),
+                    }
+                },
+                upsert=True,
+            )
             for symbol in list(self.loadedwatchsymbols):
                 token = self.tok_symbols.get(symbol)
                 if token:
                     self._subscribe_aliceblue_depth_for_symbol(symbol, token)
         except Exception as e:
+            self.db["broker_health"].update_one(
+                {"user": user, "broker": "aliceblue"},
+                {
+                    "$set": {
+                        "websocket_status": "disconnected",
+                        "last_error": f"Market depth websocket failed: {e}",
+                        "updated_at": datetime.datetime.utcnow(),
+                    }
+                },
+                upsert=True,
+            )
+            trading_exception(
+                "aliceblue_market_depth_start_error",
+                e,
+                user=user,
+                broker="aliceblue",
+            )
             print(f"aliceblue market depth websocket start failed user={user}: {e}")
 
     def _subscribe_aliceblue_depth_for_symbol(self, symbol, token=None, row=None):

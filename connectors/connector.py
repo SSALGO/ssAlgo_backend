@@ -535,6 +535,7 @@ class Exchange:
         self._debug_last_feed_log = 0
         self._debug_strategy_eval_log_times = {}
         self._debug_legacy_login_log_times = {}
+        self._debug_decision_log_state = {}
         self._price_unavailable_log_times = {}
         self.sessionusertoken=sessionusertoken
         trading_event("strategy_engine_stage", force=True, stage="remote_instrument_masters")
@@ -2596,6 +2597,19 @@ class Exchange:
             symbol=trade.get("symbol"),
         )
 
+    def _log_decision_on_change(
+        self, event, trade, state, details, interval_env="DEBUG_TRADING_DECISION_INTERVAL_SECONDS"
+    ):
+        strategy_id = str(trade.get("botcode") or trade.get("_id") or "")
+        key = (event, strategy_id)
+        now = time.monotonic()
+        interval = max(1, int(os.getenv(interval_env, "60")))
+        previous = self._debug_decision_log_state.get(key) or {}
+        if previous.get("state") == state and now - previous.get("time", 0) < interval:
+            return
+        self._debug_decision_log_state[key] = {"state": state, "time": now}
+        trading_event(event, **details)
+
     def _next_entry_id(self):
         return time.time_ns()
 
@@ -3457,8 +3471,8 @@ class Exchange:
                         else:
                             Signal=0
                             exSignal=0
-                        trading_event(
-                            "signal_evaluation",
+                        last_candle_time = str(df1['date'].iloc[-1])
+                        signal_details = dict(
                             user=trade.get("user"),
                             strategy_id=trade.get("botcode"),
                             strategy=trade.get("strategy"),
@@ -3472,11 +3486,24 @@ class Exchange:
                             long_ema=float(df1['long'].iloc[-1]),
                             trend_current=trends[-trade['candle1']],
                             trend_previous=trends[-trade['candle2']],
+                            last_candle_time=last_candle_time,
                             result=(
                                 "signal_generated"
                                 if Signal in (1, -1)
                                 else "entry_condition_false"
                             ),
+                        )
+                        self._log_decision_on_change(
+                            "signal_evaluation",
+                            trade,
+                            (
+                                last_candle_time,
+                                Signal,
+                                exSignal,
+                                trends[-trade['candle1']],
+                                trends[-trade['candle2']],
+                            ),
+                            signal_details,
                         )
                     else:
                         trading_event(
@@ -3541,8 +3568,7 @@ class Exchange:
                             and not trade['Intraday']
                             and datetime.date.today().weekday() < self.marketdays
                         )
-                        trading_event(
-                            "entry_gate_evaluation",
+                        gate_details = dict(
                             user=trade.get("user"),
                             strategy_id=trade.get("botcode"),
                             strategy=trade.get("strategy"),
@@ -3575,11 +3601,22 @@ class Exchange:
                                 else "blocked_before_order"
                             ),
                         )
+                        self._log_decision_on_change(
+                            "entry_gate_evaluation",
+                            trade,
+                            (
+                                Signal,
+                                bool(Intraday or positional or self.testmode),
+                                trade.get("timetowait"),
+                                trade.get("position"),
+                                len(self.prices),
+                            ),
+                            gate_details,
+                        )
                     if  trade['position']=='out' and trade['status']=='opened' and wait_elapsed:
                         Intraday= (datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
                         positional=(datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and not trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
-                        trading_event(
-                            "entry_gate_evaluation",
+                        gate_details = dict(
                             user=trade.get("user"),
                             strategy_id=trade.get("botcode"),
                             strategy=trade.get("strategy"),
@@ -3598,6 +3635,22 @@ class Exchange:
                                 and Signal in (1, -1)
                                 else "blocked_before_order"
                             ),
+                        )
+                        self._log_decision_on_change(
+                            "entry_gate_evaluation",
+                            trade,
+                            (
+                                Signal,
+                                bool(
+                                    entry_intraday
+                                    or entry_positional
+                                    or self.testmode
+                                ),
+                                wait_elapsed,
+                                trade.get("position"),
+                                len(self.prices),
+                            ),
+                            gate_details,
                         )
                         if Intraday or positional or self.testmode:
                             if Signal==1:
@@ -7143,6 +7196,13 @@ class Exchange:
         try:
             if trade.get('live') and trade.get('entry_order_state') in {'attempted', 'broker_failed'}:
                 return
+            if trade.get('live') and trade.get('entry_order_state') == 'preflight_failed':
+                retry_after = int(
+                    os.getenv("SSLAGO_ORDER_PREFLIGHT_RETRY_SECONDS", "30")
+                )
+                last_failure = int(trade.get('last_broker_order_error_time') or 0)
+                if int(datetime.datetime.now().timestamp()) - last_failure < retry_after:
+                    return
 
             # ---------------- OPTION SELECTION ---------------- #
 
@@ -7462,6 +7522,11 @@ class Exchange:
                         ),
                     }
                 },
+            )
+            trade['entry_order_state'] = 'preflight_failed'
+            trade['last_broker_order_error'] = error_text
+            trade['last_broker_order_error_time'] = int(
+                datetime.datetime.now().timestamp()
             )
             trading_exception(
                 "option_entry_order_failed",

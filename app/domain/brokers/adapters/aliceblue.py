@@ -49,10 +49,20 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
         with contextlib.redirect_stdout(io.StringIO()):
             response = self.client.get_session_id(session_id=session_id) if session_id else self.client.get_session_id()
         normalized = self.normalize_response("login", response, submitted_status="connected")
-        session_value = None
-        if isinstance(response, dict):
-            session_value = response.get("sessionID") or response.get("userSession")
-        if session_value:
+
+        def validate_session(candidate_response):
+            session_value = None
+            if isinstance(candidate_response, dict):
+                session_value = (
+                    candidate_response.get("sessionID")
+                    or candidate_response.get("userSession")
+                )
+            if not session_value:
+                return None, {
+                    "success": False,
+                    "status": "rejected",
+                    "message": "AliceBlue did not return a session token",
+                }
             try:
                 profile_response = self.client.get_profile()
                 profile_result = self.normalize_response(
@@ -88,6 +98,23 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
                     "message": str(exc),
                     "raw": None,
                 }
+            return session_value, profile_result
+
+        session_value, profile_result = validate_session(response)
+        if session_id and not profile_result["success"] and auth_code:
+            self.client = TradeHub(
+                user_id=user_id,
+                auth_code=auth_code,
+                secret_key=secret_key,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                response = self.client.get_session_id()
+            normalized = self.normalize_response(
+                "login", response, submitted_status="connected"
+            )
+            session_value, profile_result = validate_session(response)
+
+        if session_value:
             normalized["success"] = bool(profile_result["success"])
             normalized["status"] = (
                 "connected" if normalized["success"] else "rejected"
@@ -109,6 +136,10 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
                     },
                     upsert=True,
                 )
+        else:
+            normalized["success"] = False
+            normalized["status"] = "rejected"
+            normalized["message"] = profile_result["message"]
         self.update_login_health(credentials.user, normalized["success"], normalized["message"])
         return normalized
 

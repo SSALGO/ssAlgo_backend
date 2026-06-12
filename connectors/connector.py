@@ -9,8 +9,6 @@ import atexit
 import enum
 import contextlib
 import io
-import subprocess
-import sys
 import ssl
 import socket
 from decimal import Decimal, ROUND_HALF_UP
@@ -35,6 +33,10 @@ import requests
 from app.core.config import AppConfig
 from app.core.trading_debug import trading_event, trading_exception
 from app.core.secrets import decrypt_secret, decrypt_secret_fields, encrypt_secret
+from app.domain.brokers.aliceblue_auth import (
+    AliceBlueDirectAuthError,
+    AliceBlueDirectAuthenticator,
+)
 from app.domain.brokers.health import SECRET_FIELD_NAMES
 
 ALICEBLUE_DNS_HOSTS = {
@@ -1246,20 +1248,6 @@ class Exchange:
     def _should_suppress_aliceblue_login_warning(self, user):
         return str(user or '').strip().lower() in {'sravani'}
 
-    def _aliceblue_auth_refresh_error(self, result):
-        output = (result.stdout or result.stderr or '').strip()
-        if not output:
-            return str(result.returncode)
-        try:
-            start = output.find('{')
-            end = output.rfind('}')
-            if start != -1 and end != -1 and end > start:
-                payload = json.loads(output[start:end + 1])
-                return payload.get('error') or payload.get('message') or output.splitlines()[-1]
-        except Exception:
-            pass
-        return output.splitlines()[-1]
-
     def _aliceblue_saved_session(self, item):
         for key in ('user_session', 'sessionID', 'session_id', 'sessionid', 'userSession'):
             value = item.get(key)
@@ -1301,7 +1289,7 @@ class Exchange:
         return bool(response.get('result') or response.get('data'))
 
     def _refresh_aliceblue_auth(self, item):
-        """Run the headless AliceBlue web/API auth flow and reload saved credentials."""
+        """Regenerate AliceBlue auth and session without browser automation."""
         user = item.get('user')
         if not user:
             return None
@@ -1310,51 +1298,170 @@ class Exchange:
         if latest_item:
             item = dict(latest_item)
 
-        required_fields = {
-            'apikey': item.get('apikey'),
-            'app_key': item.get('app_key'),
-            'apisecret': item.get('apisecret'),
-            'alice_password': item.get('alice_password') or item.get('password') or item.get('pwd'),
-        }
-        missing = [name for name, value in required_fields.items() if not str(value or '').strip()]
-        if missing:
-            if not self._should_suppress_aliceblue_login_warning(user):
-                print(f"AliceBlue auth refresh skipped for {user}: missing {', '.join(missing)}")
-            return None
-
-        script_path = os.path.join(os.getcwd(), 'aliceblue_auth_playwright.py')
-        if not os.path.exists(script_path):
-            print(f"AliceBlue auth refresh skipped for {user}: {script_path} not found")
-            return None
-
-        try:
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    script_path,
-                    '--user',
-                    user,
-                    '--save',
-                    '--mongo-uri',
-                    AppConfig.MONGO_URI,
-                    '--db',
-                    AppConfig.MONGO_DB,
-                ],
-                cwd=os.getcwd(),
-                capture_output=True,
-                text=True,
-                timeout=140,
+        decrypted = decrypt_secret_fields(dict(item), SECRET_FIELD_NAMES)
+        user_id = str(decrypted.get('apikey') or '').strip()
+        auth_code = str(decrypted.get('auth_code') or '').strip()
+        secret_key = str(decrypted.get('apisecret') or '').strip()
+        session_api_missing = [
+            name
+            for name, value in (
+                ('apikey', user_id),
+                ('auth_code', auth_code),
+                ('apisecret', secret_key),
             )
-            if result.returncode != 0:
-                print(f"AliceBlue auth refresh failed for {user}: {self._aliceblue_auth_refresh_error(result)}")
-                return None
+            if not value
+        ]
+        if not session_api_missing:
+            try:
+                alice = AliceBlueTradeHubAdapter(
+                    user_id=user_id,
+                    auth_code=auth_code,
+                    secret_key=secret_key,
+                )
+                session = alice.get_session_id()
+                session_value = None
+                if isinstance(session, dict):
+                    session_value = (
+                        session.get('sessionID')
+                        or session.get('userSession')
+                    )
+                profile = alice.get_profile() if session_value else None
+                if session_value and self._aliceblue_profile_is_valid(profile):
+                    encrypted_session = encrypt_secret(session_value)
+                    self.apis_collection.update_one(
+                        {'user': user, 'broker': 'aliceblue'},
+                        {
+                            '$set': {
+                                'user_session': encrypted_session,
+                                'sessionID': encrypted_session,
+                                'session_date': str(datetime.datetime.now().date()),
+                            }
+                        },
+                        upsert=True,
+                    )
+                    self.db["broker_health"].update_one(
+                        {"user": user, "broker": "aliceblue"},
+                        {
+                            "$set": {
+                                "login_status": "connected",
+                                "last_error": "",
+                                "updated_at": datetime.datetime.utcnow(),
+                            }
+                        },
+                        upsert=True,
+                    )
+                    print(
+                        f"AliceBlue API session refresh completed for {user}"
+                    )
+                    return dict(
+                        self.apis_collection.find_one(
+                            {'user': user, 'broker': 'aliceblue'}
+                        )
+                        or {}
+                    )
+                print(
+                    f"AliceBlue saved auth_code was rejected for {user}"
+                )
+            except Exception as e:
+                print(
+                    f"AliceBlue saved auth_code refresh error for {user}: "
+                    f"{type(e).__name__}"
+                )
 
-            refreshed = self.apis_collection.find_one({'user': user, 'broker': 'aliceblue'})
-            if refreshed:
-                print(f"AliceBlue auth refresh completed for {user}")
-                return dict(refreshed)
-        except Exception as e:
-            print(f"AliceBlue auth refresh error for {user}: {e}")
+        direct_values = {
+            'user_id': user_id,
+            'password': (
+                decrypted.get('alice_password')
+                or decrypted.get('password')
+                or decrypted.get('pwd')
+            ),
+            'totp_secret': decrypted.get('totp_key'),
+            'app_code': decrypted.get('app_key'),
+            'app_secret': secret_key,
+        }
+        direct_missing = [
+            name
+            for name, value in direct_values.items()
+            if not str(value or '').strip()
+        ]
+        if direct_missing:
+            error_message = (
+                "AliceBlue automatic login is missing "
+                + ", ".join(direct_missing)
+            )
+        else:
+            try:
+                result = AliceBlueDirectAuthenticator().authenticate(
+                    **direct_values
+                )
+                refreshed_auth_code = result['auth_code']
+                refreshed_session = result['session_id']
+                alice = AliceBlueTradeHubAdapter(
+                    user_id=user_id,
+                    auth_code=refreshed_auth_code,
+                    secret_key=secret_key,
+                    session_id=refreshed_session,
+                )
+                alice.get_session_id(session_id=refreshed_session)
+                profile = alice.get_profile()
+                if not self._aliceblue_profile_is_valid(profile):
+                    raise AliceBlueDirectAuthError(
+                        "AliceBlue profile validation rejected the new session"
+                    )
+
+                encrypted_session = encrypt_secret(refreshed_session)
+                self.apis_collection.update_one(
+                    {'user': user, 'broker': 'aliceblue'},
+                    {
+                        '$set': {
+                            'auth_code': encrypt_secret(refreshed_auth_code),
+                            'user_session': encrypted_session,
+                            'sessionID': encrypted_session,
+                            'session_date': str(datetime.datetime.now().date()),
+                        }
+                    },
+                    upsert=True,
+                )
+                self.db["broker_health"].update_one(
+                    {"user": user, "broker": "aliceblue"},
+                    {
+                        "$set": {
+                            "login_status": "connected",
+                            "last_error": "",
+                            "updated_at": datetime.datetime.utcnow(),
+                        }
+                    },
+                    upsert=True,
+                )
+                print(f"AliceBlue automatic login completed for {user}")
+                return dict(
+                    self.apis_collection.find_one(
+                        {'user': user, 'broker': 'aliceblue'}
+                    )
+                    or {}
+                )
+            except AliceBlueDirectAuthError as e:
+                error_message = str(e)
+            except Exception as e:
+                error_message = (
+                    "AliceBlue automatic login failed: "
+                    f"{type(e).__name__}"
+                )
+
+        self.db["broker_health"].update_one(
+            {"user": user, "broker": "aliceblue"},
+            {
+                "$set": {
+                    "login_status": "rejected",
+                    "websocket_status": "disconnected",
+                    "last_error": error_message,
+                    "updated_at": datetime.datetime.utcnow(),
+                }
+            },
+            upsert=True,
+        )
+        if not self._should_suppress_aliceblue_login_warning(user):
+            print(f"AliceBlue automatic login rejected for {user}: {error_message}")
         return None
 
     def _login_aliceblue(self, item):
@@ -9329,9 +9436,7 @@ class Exchange:
 
         api_info = decrypt_secret_fields(dict(api_info), SECRET_FIELD_NAMES)
         session_value = self._aliceblue_saved_session(api_info)
-        session_date = str(api_info.get('session_date') or api_info.get('date') or '')
-        today = str(datetime.datetime.now().date())
-        return bool(session_value and session_date == today)
+        return bool(session_value)
 
     def _ensure_aliceblue_market_depth(self, user):
         if not getattr(self, 'aliceblue_market_depth_enabled', False):

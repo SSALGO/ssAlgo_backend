@@ -10,6 +10,10 @@ from app.domain.brokers.adapters import BrokerAdapterFactory, BrokerCredentials,
 from app.domain.brokers.adapters.aliceblue import load_trade_hub
 from app.domain.brokers.adapters.aliceblue import AliceBlueBrokerAdapter
 from app.domain.brokers.adapters.base import BrokerCredentials
+from app.domain.brokers.aliceblue_auth import (
+    AliceBlueDirectAuthError,
+    AliceBlueDirectAuthenticator,
+)
 from app.domain.brokers.health import BrokerHealthService
 from app.domain.audit.service import AuditLogService
 from app.domain.orders.lifecycle import OrderLifecycleService
@@ -19,7 +23,34 @@ from app.domain.risk.service import RiskControlService
 from app.workers.trading_worker import TradingWorker
 from app.core.logging_config import sanitize_log_value
 from app.core.secrets import decrypt_secret, encrypt_secret
-from models import EMA_mode
+from connectors.connector import Exchange
+from models import EMA_fut_mode, EMA_mode, SSTRIKE_mode
+
+
+class FakeHttpResponse:
+    def __init__(self, body):
+        self.body = body
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.body
+
+
+class FakeHttpSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    def post(self, url, json, headers, timeout):
+        self.requests.append({
+            "url": url,
+            "json": dict(json),
+            "headers": dict(headers),
+            "timeout": timeout,
+        })
+        return FakeHttpResponse(self.responses.pop(0))
 
 
 def test_aliceblue_sdk_import_reports_nested_missing_dependency(monkeypatch):
@@ -101,6 +132,189 @@ def test_aliceblue_login_rejects_unauthorized_saved_session(monkeypatch, fake_db
     assert result["success"] is False
     assert result["status"] == "rejected"
     assert result["message"] == "Unauthorized"
+
+
+def test_aliceblue_login_automatically_replaces_unauthorized_session(monkeypatch, fake_db):
+    class FakeTradeHub:
+        def __init__(self, session_id=None, **_kwargs):
+            self.session_id = session_id
+
+        def get_session_id(self, session_id=None):
+            if session_id:
+                self.session_id = session_id
+                return {"sessionID": session_id}
+            self.session_id = "fresh-session"
+            return {"sessionID": self.session_id}
+
+        def get_profile(self):
+            if self.session_id == "expired-session":
+                return {"stat": "Not_ok", "emsg": "Unauthorized"}
+            return {"status": "Ok", "result": [{"userId": "AB123"}]}
+
+    monkeypatch.setattr(
+        "app.domain.brokers.adapters.aliceblue.load_trade_hub",
+        lambda: FakeTradeHub,
+    )
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "aliceblue",
+        "apikey": "AB123",
+        "auth_code": "valid-auth-code",
+        "apisecret": "secret",
+        "user_session": "expired-session",
+    })
+    adapter = AliceBlueBrokerAdapter(db=fake_db)
+
+    result = adapter.login(BrokerCredentials(user="alice", broker="aliceblue"))
+    saved = fake_db["apis"].find_one({"user": "alice", "broker": "aliceblue"})
+
+    assert result["success"] is True
+    assert result["status"] == "connected"
+    assert decrypt_secret(saved["user_session"]) == "fresh-session"
+
+
+def test_aliceblue_saved_session_does_not_require_daily_browser_login(fake_db):
+    exchange = Exchange.__new__(Exchange)
+    exchange.apis_collection = fake_db["apis"]
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "aliceblue",
+        "user_session": encrypt_secret("still-valid-session"),
+        "session_date": "2020-01-01",
+    })
+
+    assert exchange._aliceblue_user_verified_today("alice") is True
+
+
+def test_aliceblue_direct_authentication_runs_without_browser(monkeypatch):
+    http = FakeHttpSession([
+        {"status": "Ok", "message": "Success", "result": [{"isExist": "Yes"}]},
+        {"status": "Ok", "message": "Success", "result": [{"encKey": "passphrase"}]},
+        {"status": "Ok", "message": "Success", "result": [{"token": "password-token"}]},
+        {"status": "Ok", "message": "Success", "result": [{"token": "totp-token"}]},
+        {
+            "status": "Ok",
+            "message": "Success",
+            "result": [{
+                "authorized": True,
+                "redirectUrl": (
+                    "http://127.0.0.1:5000?"
+                    "authCode=fresh-auth-code&userId=AB123"
+                ),
+            }],
+        },
+        {"stat": "Ok", "userSession": "fresh-session"},
+    ])
+    monkeypatch.setattr(
+        AliceBlueDirectAuthenticator,
+        "_totp_value",
+        staticmethod(lambda _secret: "123456"),
+    )
+
+    result = AliceBlueDirectAuthenticator(http=http).authenticate(
+        user_id="AB123",
+        password="password",
+        totp_secret="JBSWY3DPEHPK3PXP",
+        app_code="app-code",
+        app_secret="app-secret",
+    )
+
+    assert result == {
+        "user_id": "AB123",
+        "auth_code": "fresh-auth-code",
+        "session_id": "fresh-session",
+    }
+    assert len(http.requests) == 6
+    assert http.requests[2]["json"]["userData"] != "password"
+    assert http.requests[3]["json"]["totp"] == "123456"
+    assert http.requests[3]["headers"]["Authorization"] == (
+        "Bearer AB123 WEB password-token"
+    )
+    assert all("playwright" not in request["url"].lower() for request in http.requests)
+
+
+def test_aliceblue_direct_authentication_reports_totp_rejection(monkeypatch):
+    http = FakeHttpSession([
+        {"status": "Ok", "message": "Success", "result": [{"isExist": "Yes"}]},
+        {"status": "Ok", "message": "Success", "result": [{"encKey": "passphrase"}]},
+        {"status": "Ok", "message": "Success", "result": [{"token": "password-token"}]},
+        {"status": "Not ok", "message": "Invalid totp", "result": []},
+    ])
+    monkeypatch.setattr(
+        AliceBlueDirectAuthenticator,
+        "_totp_value",
+        staticmethod(lambda _secret: "123456"),
+    )
+
+    with pytest.raises(
+        AliceBlueDirectAuthError,
+        match="TOTP verification rejected: Invalid totp",
+    ):
+        AliceBlueDirectAuthenticator(http=http).authenticate(
+            user_id="AB123",
+            password="password",
+            totp_secret="JBSWY3DPEHPK3PXP",
+            app_code="app-code",
+            app_secret="app-secret",
+        )
+
+    assert len(http.requests) == 4
+
+
+def test_aliceblue_refresh_persists_direct_auth_session(monkeypatch, fake_db):
+    class FakeDirectAuthenticator:
+        def authenticate(self, **_kwargs):
+            return {
+                "user_id": "AB123",
+                "auth_code": "fresh-auth-code",
+                "session_id": "fresh-session",
+            }
+
+    class FakeAlice:
+        def __init__(self, **_kwargs):
+            pass
+
+        def get_session_id(self, session_id=None):
+            return {"sessionID": session_id}
+
+        def get_profile(self):
+            return {"status": "Ok", "result": [{"userId": "AB123"}]}
+
+    monkeypatch.setattr(
+        "connectors.connector.AliceBlueDirectAuthenticator",
+        FakeDirectAuthenticator,
+    )
+    monkeypatch.setattr(
+        "connectors.connector.AliceBlueTradeHubAdapter",
+        FakeAlice,
+    )
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "aliceblue",
+        "apikey": "AB123",
+        "apisecret": "app-secret",
+        "alice_password": "password",
+        "totp_key": "JBSWY3DPEHPK3PXP",
+        "app_key": "app-code",
+    })
+    exchange = Exchange.__new__(Exchange)
+    exchange.db = fake_db
+    exchange.apis_collection = fake_db["apis"]
+
+    refreshed = exchange._refresh_aliceblue_auth(
+        fake_db["apis"].find_one({"user": "alice", "broker": "aliceblue"})
+    )
+    saved = fake_db["apis"].find_one({"user": "alice", "broker": "aliceblue"})
+    health = fake_db["broker_health"].find_one({
+        "user": "alice",
+        "broker": "aliceblue",
+    })
+
+    assert refreshed is not None
+    assert decrypt_secret(saved["auth_code"]) == "fresh-auth-code"
+    assert decrypt_secret(saved["user_session"]) == "fresh-session"
+    assert health["login_status"] == "connected"
+    assert health["last_error"] == ""
 
 
 def test_log_sanitizer_masks_camel_case_broker_session():
@@ -244,6 +458,75 @@ def test_algorithm_143_options_configuration_loads_required_fields():
     assert strategy.position == "out"
 
 
+def test_algorithm_143_future_configuration_loads_required_fields():
+    payload = _algorithm_143_payload(
+        botname="Algo143FutureSmoke",
+        botcode="ALG143-FUT",
+        Expiry="Current Month",
+        onspot="true",
+    )
+
+    strategy = EMA_fut_mode(payload)
+
+    assert strategy.strategy == "EMA"
+    assert strategy.botcode == "ALG143-FUT"
+    assert strategy.onspot is True
+    assert strategy.live is False
+    assert strategy.position == "out"
+
+
+def test_algorithm_143_sstrike_configuration_loads_required_fields():
+    payload = _algorithm_143_payload(
+        botname="Algo143SStrikeSmoke",
+        botcode="ALG143-SSTRIKE",
+        r2="19",
+        k2="20",
+    )
+
+    strategy = SSTRIKE_mode(payload)
+
+    assert strategy.strategy == "SSTRIKE"
+    assert strategy.botcode == "ALG143-SSTRIKE"
+    assert strategy.r1 == 19
+    assert strategy.k1 == 20
+    assert strategy.live is False
+    assert strategy.position == "out"
+
+
+@pytest.mark.parametrize(
+    ("new_signal", "trends", "expected_signal", "expected_exit"),
+    [
+        (True, [1, 0], 1, 1),
+        (True, [0, 1], -1, -1),
+        (True, [0, 0], 0, 1),
+        (False, [0, 0], 1, 1),
+    ],
+)
+def test_algorithm_143_signal_evaluation_is_deterministic(
+    new_signal, trends, expected_signal, expected_exit
+):
+    result = Exchange._evaluate_143_signal(
+        {"Newsignal": new_signal, "candle1": 1, "candle2": 2},
+        trends,
+        list(trends),
+    )
+
+    assert result["signal"] == expected_signal
+    assert result["exit_signal"] == expected_exit
+
+
+def test_algorithm_143_signal_evaluation_handles_short_history():
+    result = Exchange._evaluate_143_signal(
+        {"Newsignal": True, "candle1": 1, "candle2": 2},
+        [0],
+        [0],
+    )
+
+    assert result["signal"] == 0
+    assert result["exit_signal"] == 0
+    assert result["reason"] == "insufficient_trend_history"
+
+
 def test_algorithm_143_rejects_invalid_quantity_input():
     with pytest.raises(ValueError):
         EMA_mode(_algorithm_143_payload(lot="bad"))
@@ -255,6 +538,69 @@ def test_algorithm_143_rejects_missing_required_input():
 
     with pytest.raises(KeyError):
         EMA_mode(payload)
+
+
+def test_algorithm_143_future_rejection_does_not_create_open_position(fake_db):
+    exchange = Exchange.__new__(Exchange)
+    exchange.strategy_collection = fake_db["strategies"]
+    exchange.opositions_collection = fake_db["Opositions"]
+    exchange.broker_collection = fake_db["broker"]
+    exchange.prices = {"NIFTY-I": 24500.0, "NIFTYFUT": 24505.0}
+    exchange.sprices = {}
+    exchange.last_order_price_context = {}
+    exchange.MainFutureSelect = lambda _symbol, _expiry: (
+        "NIFTYFUT",
+        25,
+        "2099-12-31",
+        12345,
+    )
+    exchange._symboltransformmonthfut = lambda _expiry, _symbol: "NIFTY-I"
+    exchange._make_instrument = lambda *_args: {"token": 12345}
+    exchange._next_entry_id = lambda: 1
+    exchange._place_aliceblue_limit_order = lambda **_kwargs: {
+        "status": "Not_ok",
+        "emsg": "Insufficient balance",
+    }
+    exchange.alice = {
+        "alice": type(
+            "FakeAlice",
+            (),
+            {"get_instrument_by_token": lambda *_args: {"token": 12345}},
+        )()
+    }
+    fake_db["broker"].insert_one({
+        "user": "alice",
+        "selectedbroker": "aliceblue",
+    })
+    trade = dict(
+        EMA_fut_mode(
+            _algorithm_143_payload(
+                user="alice",
+                botname="Algo143FutureLiveReject",
+                botcode="ALG143-FUT-REJECT",
+                Expiry="Current Month",
+                onspot="true",
+                live="true",
+                status="opened",
+            )
+        ).__dict__
+    )
+    fake_db["strategies"].insert_one(dict(trade))
+
+    exchange.FBUY(trade, "BUY", 1)
+
+    position = fake_db["Opositions"].find_one({
+        "user": "alice",
+        "botcode": "ALG143-FUT-REJECT",
+    })
+    saved_strategy = fake_db["strategies"].find_one({
+        "user": "alice",
+        "botcode": "ALG143-FUT-REJECT",
+    })
+    assert position["status"] == "broker_failed"
+    assert position["decision"] == "broker_failed"
+    assert saved_strategy["position"] == "out"
+    assert saved_strategy["entry_order_state"] == "broker_failed"
 
 
 def test_order_lifecycle_transition():

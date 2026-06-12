@@ -417,8 +417,88 @@ class AliceBlueTradeHubAdapter:
     def get_instrument_by_symbol(self, exchange, symbol):
         return self.trade.get_instrument(exchange=exchange, symbol=symbol)
 
+    def _aliceblue_websocket_session_request(self, action, session_id):
+        endpoint_map = {
+            "invalidate": "invalidateWsSess",
+            "create": "createWsSess",
+        }
+        endpoint = endpoint_map[action]
+        headers = {
+            "Authorization": f"Bearer {session_id}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "source": "API",
+            "userId": self.user_id,
+        }
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                response = requests.post(
+                    f"{self.BASE_URL}/open-api/od/v1/profile/{endpoint}",
+                    headers=headers,
+                    json=payload,
+                    timeout=15,
+                )
+                content_type = response.headers.get("content-type", "")
+                body_preview = str(response.text or "")[:200]
+                try:
+                    result = response.json()
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"AliceBlue {endpoint} returned non-JSON response: "
+                        f"http_status={response.status_code}, "
+                        f"content_type={content_type or 'missing'}, "
+                        f"body={body_preview!r}"
+                    ) from exc
+                if response.status_code >= 400:
+                    raise RuntimeError(
+                        f"AliceBlue {endpoint} failed: "
+                        f"http_status={response.status_code}, response={result}"
+                    )
+                return result
+            except Exception as exc:
+                last_error = exc
+                if attempt < 3:
+                    time.sleep(attempt)
+        raise RuntimeError(
+            f"AliceBlue websocket session {action} failed after 3 attempts: "
+            f"{last_error}"
+        )
+
     def start_websocket(self, **kwargs):
-        return self.trade.start_websocket(**kwargs)
+        session_id = self._resolve_session_token()
+        if not session_id:
+            raise RuntimeError("AliceBlue websocket session token is missing")
+
+        self.trade.invalid_sess = (
+            lambda token: self._aliceblue_websocket_session_request(
+                "invalidate", token
+            )
+        )
+        self.trade.createSession = (
+            lambda token: self._aliceblue_websocket_session_request(
+                "create", token
+            )
+        )
+
+        opened = threading.Event()
+        original_open_callback = kwargs.get("socket_open_callback")
+
+        def verified_open_callback():
+            opened.set()
+            if original_open_callback:
+                original_open_callback()
+
+        kwargs["socket_open_callback"] = verified_open_callback
+        result = self.trade.start_websocket(**kwargs)
+        if kwargs.get("run_in_background") and not opened.wait(
+            int(os.getenv("SSLAGO_ALICEBLUE_WEBSOCKET_TIMEOUT_SECONDS", "15"))
+        ):
+            raise RuntimeError(
+                "AliceBlue websocket did not open before the startup timeout"
+            )
+        return result
 
     def stop_websocket(self):
         return self.trade.stop_websocket()
@@ -1052,12 +1132,12 @@ class Exchange:
         return users
 
     def _get_execution_active_users(self):
-        """Users whose live execution is active or who still have live positions to manage."""
+        """Users who need a live broker session for startup or position management."""
         try:
             query = {
                 'live': True,
                 '$or': [
-                    {'status': 'opened'},
+                    {'status': {'$in': ['opened', 'paused']}},
                     {'position': 'in'},
                 ],
             }

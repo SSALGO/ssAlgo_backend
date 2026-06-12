@@ -218,6 +218,9 @@ class AliceBlueTradeHubAdapter:
             self.session_id = response['sessionID']
         return response
 
+    def get_profile(self):
+        return self.trade.get_profile()
+
     def _resolve_session_token(self):
         candidates = [
             self.session_id,
@@ -810,6 +813,7 @@ class Exchange:
         self.last_order_price_context = {}
         self.aliceblue_market_depth_enabled = True
         self.aliceblue_depth_started = set()
+        self.aliceblue_depth_starting = set()
         self.recent_broker_order_keys = {}
         self.broker_order_duplicate_window_seconds = 30
         self.candles1m = dict()
@@ -1263,6 +1267,39 @@ class Exchange:
                 return decrypt_secret(value)
         return None
 
+    @staticmethod
+    def _aliceblue_profile_is_valid(response):
+        if not isinstance(response, dict):
+            return False
+
+        status = str(
+            response.get('status')
+            or response.get('Status')
+            or response.get('stat')
+            or ''
+        ).strip().lower()
+        message = ' '.join(
+            str(response.get(key) or '')
+            for key in (
+                'message', 'Message', 'remarks', 'emsg', 'error', 'Error'
+            )
+        ).lower()
+        if status in {'not_ok', 'not ok', 'failed', 'failure', 'rejected'}:
+            return False
+        if any(
+            token in message
+            for token in (
+                'unauthor',
+                'invalid session',
+                'session expired',
+                'token expired',
+            )
+        ):
+            return False
+        if status:
+            return status in {'ok', 'success', 'connected'}
+        return bool(response.get('result') or response.get('data'))
+
     def _refresh_aliceblue_auth(self, item):
         """Run the headless AliceBlue web/API auth flow and reload saved credentials."""
         user = item.get('user')
@@ -1324,69 +1361,72 @@ class Exchange:
         """AliceBlue login handler"""
         try:
             item = decrypt_secret_fields(dict(item or {}), SECRET_FIELD_NAMES)
-            user_id = str(item.get('apikey', '')).strip()
-            auth_code = str(item.get('auth_code', '')).strip()
-            secret_key = str(item.get('apisecret', '')).strip()
-            existing_session = self._aliceblue_saved_session(item)
-            has_session = bool(str(existing_session or '').strip())
+            for attempt in range(2):
+                user_id = str(item.get('apikey', '')).strip()
+                auth_code = str(item.get('auth_code', '')).strip()
+                secret_key = str(item.get('apisecret', '')).strip()
+                existing_session = self._aliceblue_saved_session(item)
+                has_session = bool(str(existing_session or '').strip())
 
-            missing_fields = [
-                field_name
-                for field_name, value in (
-                    ('apikey', user_id),
-                    ('apisecret', secret_key),
-                )
-                if not value
-            ]
-            if missing_fields:
-                if not self._should_suppress_aliceblue_login_warning(item.get('user')):
-                    print(
-                        f"AliceBlue login skipped for {item.get('user')}: "
-                        f"missing {', '.join(missing_fields)}"
+                missing_fields = [
+                    field_name
+                    for field_name, value in (
+                        ('apikey', user_id),
+                        ('apisecret', secret_key),
                     )
-                return item['user'], None, None
+                    if not value
+                ]
+                if missing_fields:
+                    if not self._should_suppress_aliceblue_login_warning(item.get('user')):
+                        print(
+                            f"AliceBlue login skipped for {item.get('user')}: "
+                            f"missing {', '.join(missing_fields)}"
+                        )
+                    return item['user'], None, None
 
-            if not auth_code and not has_session:
-                refreshed_item = self._refresh_aliceblue_auth(item)
-                if refreshed_item:
-                    item = decrypt_secret_fields(dict(refreshed_item), SECRET_FIELD_NAMES)
-                    user_id = str(item.get('apikey', '')).strip()
-                    auth_code = str(item.get('auth_code', '')).strip()
-                    secret_key = str(item.get('apisecret', '')).strip()
-                    existing_session = self._aliceblue_saved_session(item)
-                    has_session = bool(str(existing_session or '').strip())
-
-            if not auth_code and not has_session:
-                if not self._should_suppress_aliceblue_login_warning(item.get('user')):
-                    print(f"AliceBlue login skipped for {item.get('user')}: missing auth_code")
-                return item['user'], None, None
-
-            alice_instance = AliceBlueTradeHubAdapter(
-                user_id=user_id,
-                auth_code=auth_code,
-                secret_key=secret_key,
-                session_id=existing_session if has_session else None
-            )
-            if has_session:
-                session_id = alice_instance.get_session_id(session_id=existing_session)
-            else:
-                session_id = alice_instance.get_session_id()
-                if isinstance(session_id, dict) and 'sessionID' not in session_id:
+                if not auth_code and not has_session:
                     refreshed_item = self._refresh_aliceblue_auth(item)
                     if refreshed_item:
-                        item = decrypt_secret_fields(dict(refreshed_item), SECRET_FIELD_NAMES)
-                        existing_session = self._aliceblue_saved_session(item)
-                        alice_instance = AliceBlueTradeHubAdapter(
-                            user_id=str(item.get('apikey', '')).strip(),
-                            auth_code=str(item.get('auth_code', '')).strip(),
-                            secret_key=str(item.get('apisecret', '')).strip(),
-                            session_id=existing_session
+                        item = decrypt_secret_fields(
+                            dict(refreshed_item), SECRET_FIELD_NAMES
                         )
-                        session_id = alice_instance.get_session_id(session_id=existing_session) if existing_session else alice_instance.get_session_id()
-            
-            if isinstance(session_id, dict):
-                session_value = session_id.get('sessionID') or session_id.get('userSession')
+                        continue
+                    if not self._should_suppress_aliceblue_login_warning(item.get('user')):
+                        print(
+                            f"AliceBlue login skipped for {item.get('user')}: "
+                            "missing auth_code and session"
+                        )
+                    return item['user'], None, None
+
+                alice_instance = AliceBlueTradeHubAdapter(
+                    user_id=user_id,
+                    auth_code=auth_code,
+                    secret_key=secret_key,
+                    session_id=existing_session if has_session else None
+                )
+                session_id = (
+                    alice_instance.get_session_id(session_id=existing_session)
+                    if has_session
+                    else alice_instance.get_session_id()
+                )
+                session_value = None
+                if isinstance(session_id, dict):
+                    session_value = (
+                        session_id.get('sessionID')
+                        or session_id.get('userSession')
+                    )
+
+                profile = None
                 if session_value:
+                    try:
+                        profile = alice_instance.get_profile()
+                    except Exception as profile_error:
+                        profile = {
+                            'stat': 'Not_ok',
+                            'emsg': str(profile_error),
+                        }
+
+                if session_value and self._aliceblue_profile_is_valid(profile):
                     encrypted_session = encrypt_secret(session_value)
                     self.apis_collection.update_one(
                         {'user': item['user'], 'broker': 'aliceblue'},
@@ -1402,6 +1442,42 @@ class Exchange:
                     normalized_session = dict(session_id)
                     normalized_session['sessionID'] = session_value
                     return item['user'], alice_instance, normalized_session
+
+                if attempt == 0:
+                    refreshed_item = self._refresh_aliceblue_auth(item)
+                    if refreshed_item:
+                        item = decrypt_secret_fields(
+                            dict(refreshed_item), SECRET_FIELD_NAMES
+                        )
+                        continue
+
+                error_message = (
+                    "AliceBlue profile validation rejected the saved session"
+                )
+                if isinstance(profile, dict):
+                    error_message = str(
+                        profile.get('message')
+                        or profile.get('emsg')
+                        or profile.get('error')
+                        or error_message
+                    )
+                self.db["broker_health"].update_one(
+                    {"user": item['user'], "broker": "aliceblue"},
+                    {
+                        "$set": {
+                            "login_status": "rejected",
+                            "websocket_status": "disconnected",
+                            "last_error": error_message,
+                            "updated_at": datetime.datetime.utcnow(),
+                        }
+                    },
+                    upsert=True,
+                )
+                print(
+                    f"AliceBlue login rejected for {item['user']}: "
+                    f"{error_message}"
+                )
+                return item['user'], None, None
             return item['user'], None, None
         except Exception as e:
             print(f"AliceBlue login error for {item['user']}: {e}")
@@ -2862,6 +2938,62 @@ class Exchange:
 
             except Exception as e:
                 print(f"Error in CHARTINK: {e}")
+    @staticmethod
+    def _evaluate_143_signal(trade, trends, trends1):
+        candle1 = int(trade.get('candle1') or 0)
+        candle2 = int(trade.get('candle2') or 0)
+        required = max(candle1, candle2)
+        if (
+            candle1 <= 0
+            or candle2 <= 0
+            or len(trends) < required
+            or len(trends1) < required
+        ):
+            return {
+                'signal': 0,
+                'exit_signal': 0,
+                'trend_current': None,
+                'trend_previous': None,
+                'trend2_current': None,
+                'trend2_previous': None,
+                'reason': 'insufficient_trend_history',
+            }
+
+        current = trends[-candle1]
+        previous = trends[-candle2]
+        current2 = trends1[-candle1]
+        previous2 = trends1[-candle2]
+        signal = 0
+
+        if trade.get('Newsignal'):
+            condition = current != previous and current2 != previous2
+        else:
+            condition = (
+                (current == previous and current2 == previous2)
+                or (current != previous and current2 != previous2)
+            )
+
+        if condition:
+            if current == 0 and current2 == 0:
+                signal = 1
+            elif current == 1 and current2 == 1:
+                signal = -1
+
+        exit_signal = 1 if current == 0 else -1 if current == 1 else 0
+        return {
+            'signal': signal,
+            'exit_signal': exit_signal,
+            'trend_current': current,
+            'trend_previous': previous,
+            'trend2_current': current2,
+            'trend2_previous': previous2,
+            'reason': (
+                'signal_generated'
+                if signal in (1, -1)
+                else 'entry_condition_false'
+            ),
+        }
+
     def SSTRIKE(self,trade):
         #signal-1 for buy -1 for sell
         #print('striker')
@@ -2945,32 +3077,11 @@ class Exchange:
                         #print(trade['timeframe'])
                         #print(trends)
                         #print(trends1)
-                        exSignal=0
-                        #if True :#datetime.datetime.now().time()>datetime.datetime.strptime(config['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(config['ExitTime'], '%H:%M').time()
-                        if trade['Newsignal'] :
-                            if trends[-trade['candle1']] !=trends[-trade['candle2']]  and  trends1[-trade['candle1']] !=trends1[-trade['candle2']]:
-                                if (trends[-trade['candle1']]==0) and (trends1[-trade['candle1']]==0):
-                                    Signal=1
-                                elif (trends[-trade['candle1']]==1) and (trends1[-trade['candle1']]==1):
-                                    Signal=-1
-
-                            if (trends[-trade['candle1']]==0):
-                                exSignal=1
-                            elif (trends[-trade['candle1']]==1):
-                                exSignal=-1
-                        elif not trade['Newsignal'] :
-                            if  (trends[-trade['candle1']] ==trends[-trade['candle2']] and trends1[-trade['candle1']] ==trends1[-trade['candle2']]) or (trends[-trade['candle1']] !=trends[-trade['candle2']]  and  trends1[-trade['candle1']] !=trends1[-trade['candle2']]):
-                                if (trends[-trade['candle1']]==0) and (trends1[-trade['candle1']]==0):
-                                    Signal=1
-                                elif (trends[-trade['candle1']]==1) and (trends1[-trade['candle1']]==1):
-                                    Signal=-1
-                            if (trends[-trade['candle1']]==0):
-                                exSignal=1
-                            elif (trends[-trade['candle1']]==1):
-                                exSignal=-1
-                        else:
-                            Signal=0
-                            exSignal=0
+                        signal_result = self._evaluate_143_signal(
+                            trade, trends, trends1
+                        )
+                        Signal = signal_result['signal']
+                        exSignal = signal_result['exit_signal']
                         trading_event(
                             "signal_evaluation",
                             user=trade.get("user"),
@@ -2982,11 +3093,11 @@ class Exchange:
                             signal=Signal,
                             exit_signal=exSignal,
                             new_signal=trade.get("Newsignal"),
-                            trend_current=trends[-trade['candle1']],
-                            trend_previous=trends[-trade['candle2']],
-                            trend2_current=trends1[-trade['candle1']],
-                            trend2_previous=trends1[-trade['candle2']],
-                            result="signal_generated" if Signal in (1, -1) else "entry_condition_false",
+                            trend_current=signal_result['trend_current'],
+                            trend_previous=signal_result['trend_previous'],
+                            trend2_current=signal_result['trend2_current'],
+                            trend2_previous=signal_result['trend2_previous'],
+                            result=signal_result['reason'],
                         )
                     else:
                         trading_event(
@@ -3527,30 +3638,11 @@ class Exchange:
                         #print(trends1)
                         
                         #if True :#datetime.datetime.now().time()>datetime.datetime.strptime(config['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(config['ExitTime'], '%H:%M').time()
-                        if trade['Newsignal'] :
-                            if trends[-trade['candle1']] !=trends[-trade['candle2']]  and  trends1[-trade['candle1']] !=trends1[-trade['candle2']]:
-                                if (trends[-trade['candle1']]==0) and (trends1[-trade['candle1']]==0):
-                                    Signal=1
-                                elif (trends[-trade['candle1']]==1) and (trends1[-trade['candle1']]==1):
-                                    Signal=-1
-
-                            if (trends[-trade['candle1']]==0):
-                                exSignal=1
-                            elif (trends[-trade['candle1']]==1):
-                                exSignal=-1
-                        elif not trade['Newsignal']:
-                            if  (trends[-trade['candle1']] ==trends[-trade['candle2']] and trends1[-trade['candle1']] ==trends1[-trade['candle2']]) or (trends[-trade['candle1']] !=trends[-trade['candle2']]  and  trends1[-trade['candle1']] !=trends1[-trade['candle2']]):
-                                if (trends[-trade['candle1']]==0) and (trends1[-trade['candle1']]==0):
-                                    Signal=1
-                                elif (trends[-trade['candle1']]==1) and (trends1[-trade['candle1']]==1):
-                                    Signal=-1
-                            if (trends[-trade['candle1']]==0):
-                                exSignal=1
-                            elif (trends[-trade['candle1']]==1):
-                                exSignal=-1
-                        else:
-                            Signal=0
-                            exSignal=0
+                        signal_result = self._evaluate_143_signal(
+                            trade, trends, trends1
+                        )
+                        Signal = signal_result['signal']
+                        exSignal = signal_result['exit_signal']
                         last_candle_time = str(df1['date'].iloc[-1])
                         signal_details = dict(
                             user=trade.get("user"),
@@ -3564,14 +3656,10 @@ class Exchange:
                             new_signal=trade.get("Newsignal"),
                             short_ema=float(df1['short'].iloc[-1]),
                             long_ema=float(df1['long'].iloc[-1]),
-                            trend_current=trends[-trade['candle1']],
-                            trend_previous=trends[-trade['candle2']],
+                            trend_current=signal_result['trend_current'],
+                            trend_previous=signal_result['trend_previous'],
                             last_candle_time=last_candle_time,
-                            result=(
-                                "signal_generated"
-                                if Signal in (1, -1)
-                                else "entry_condition_false"
-                            ),
+                            result=signal_result['reason'],
                         )
                         self._log_decision_on_change(
                             "signal_evaluation",
@@ -3580,8 +3668,8 @@ class Exchange:
                                 last_candle_time,
                                 Signal,
                                 exSignal,
-                                trends[-trade['candle1']],
-                                trends[-trade['candle2']],
+                                signal_result['trend_current'],
+                                signal_result['trend_previous'],
                             ),
                             signal_details,
                         )
@@ -5741,6 +5829,10 @@ class Exchange:
 
     def FBUY(self,trade,OTYPE,Signal):
         try:
+            if trade.get('live') and trade.get('entry_order_state') in {
+                'attempted', 'broker_failed'
+            }:
+                return
             
             option,optionlot,optionexpiry,optiontoken=self.MainFutureSelect(trade['symbol'],trade['Expiry'])
             #print( option,optionlot,optionexpiry)
@@ -5776,8 +5868,21 @@ class Exchange:
                 pricesss=float(self.sprices[option])
             else:
                 pricesss=float(self.prices[symbol])
-            
+
+            broker_order_results = []
             if trade['live']:
+                self.strategy_collection.update_one(
+                    {'botcode': trade['botcode'], 'user': trade['user']},
+                    {
+                        '$set': {
+                            'entry_order_state': 'attempted',
+                            'entry_order_time': int(
+                                datetime.datetime.now().timestamp()
+                            ),
+                        }
+                    },
+                )
+                trade['entry_order_state'] = 'attempted'
                 lot=trade['lot']
                 if lot>20:
                     totalquant=[trade['slicing']]*int(lot/trade['slicing'])
@@ -5786,9 +5891,10 @@ class Exchange:
                     for quant in totalquant:
                         #place_trade('NFO',trade['EntryOption'], quant, 'sell')
                         z=self.broker_collection.find_one({'user':trade['user']})
+                        ret = None
                         if z['selectedbroker']=='shoonya':
                             ret = self.shoonya[trade['user']].place_order(buy_or_sell='B', product_type='M',
-                                exchange=exch, tradingsymbol=trade['optionname'], 
+                                exchange=exch, tradingsymbol=option,
                                 quantity=int(optionlot)*int(quant), discloseqty=0,price_type='MKT', price=0, trigger_price=0,
                                 retention='DAY', remarks='my_order_001')
                         elif z['selectedbroker']=='aliceblue':
@@ -5879,16 +5985,17 @@ class Exchange:
                         bo_profit_value=None, bo_stop_loss_Value=None, tag=None )
                                 print(ret)
                             except Exception as e:
-                                print(f"[ERROR] Order failed but returning True anyway: {e}")
-
-                            ret = True
-                            print(ret)
+                                ret = {
+                                    'status': 'failed',
+                                    'error': str(e),
+                                }
+                                print(f"[ERROR] Dhan future BUY failed: {e}")
                         elif z['selectedbroker']=='zerodha':
                             tradingsymbol=self.kiteSymboldf[(self.kiteSymboldf['exchange']==exch)&(self.kiteSymboldf['exchange_token']==optiontoken)]['tradingsymbol'].iloc[-1]
                             ret=self.zerodha[trade['user']].place_order(tradingsymbol=tradingsymbol,
                                                 exchange=exch,
                                                 transaction_type="BUY" ,
-                                                quantity=int(trade['optionlot']) * int(quant),
+                                                quantity=int(optionlot) * int(quant),
                                                 variety="regular",
                                                 order_type="MARKET",
                                                 product="NRML",
@@ -5962,13 +6069,22 @@ class Exchange:
 
                             response = requests.post('https://api.mstock.trade/openapi/typea/orders/regular', headers=headers, data=data)
                             ret=(response.json())
-                            
-                        
+                        broker_order_results.append(
+                            self._record_broker_order_result(
+                                trade,
+                                z['selectedbroker'],
+                                ret,
+                                'BUY',
+                                option,
+                                int(optionlot) * int(quant),
+                            )
+                        )
 
                 else:
                     #place_trade('NFO',trade['EntryOption'], trade['Lot'], 'sell')
 
                     z=self.broker_collection.find_one({'user':trade['user']})
+                    ret = None
                     if z['selectedbroker']=='shoonya':
                         ret = self.shoonya[trade['user']].place_order(buy_or_sell='B', product_type='M',
                             exchange=exch, tradingsymbol=option, 
@@ -6068,12 +6184,12 @@ class Exchange:
                         bo_profit_value=None, bo_stop_loss_Value=None, tag=None )
                             print(ret)
                         except Exception as e:
-                            print(f"[ERROR] Order failed but returning True anyway: {e}")
-
-                        ret = True
-                        print(ret)
+                            ret = {
+                                'status': 'failed',
+                                'error': str(e),
+                            }
+                            print(f"[ERROR] Dhan future BUY failed: {e}")
                     elif z['selectedbroker']=='zerodha':
-                        exch=trad['exch']
                         tradingsymbol=self.kiteSymboldf[(self.kiteSymboldf['exchange']==exch)&(self.kiteSymboldf['exchange_token']==optiontoken)]['tradingsymbol'].iloc[-1]
                         ret=self.zerodha[trade['user']].place_order(tradingsymbol=tradingsymbol,
                                             exchange=exch,
@@ -6153,24 +6269,78 @@ class Exchange:
 
                         response = requests.post('https://api.mstock.trade/openapi/typea/orders/regular', headers=headers, data=data)
                         ret=(response.json())
+                    broker_order_results.append(
+                        self._record_broker_order_result(
+                            trade,
+                            z['selectedbroker'],
+                            ret,
+                            'BUY',
+                            option,
+                            int(optionlot) * int(trade['lot']),
+                        )
+                    )
                 print(ret)
-            #print('i am goee')
-            #print('i am goee')
-            
+
+            broker_order_success = (not trade['live']) or (
+                bool(broker_order_results)
+                and all(result['success'] for result in broker_order_results)
+            )
             pos={'user':str(trade['user']),'botname':trade['botname'],'time':int(datetime.datetime.now().timestamp()),'symbol':symbol,'entry_price':float(pricesss)
-            ,'side':OTYPE,'status':"open",'pnl':0,'lot':trade['lot'],'initial_lot':trade['lot'],
+            ,'side':OTYPE,'status':"open" if broker_order_success else "broker_failed",'pnl':0,'lot':trade['lot'],'initial_lot':trade['lot'],
             'optionentry':float(pricesss),'optionexit':float(pricesss),'optionlot':int(optionlot),'optionexpiry':str(optionexpiry),
-            'optionname':str(option), 'pnlhalf':0,"decision":"intrade",'BSmode':True,'entrycond':Signal,'exitcond':self.oppocond(Signal),'entry_id':self._next_entry_id(),'live':trade['live'],
-            'exch':exch,'current_price':float(pricesss),'botcode':trade['botcode'],'optiontoken':int(optiontoken),'trail_stoploss':0}
-            #print(pos)
+            'optionname':str(option), 'pnlhalf':0,"decision":"intrade" if broker_order_success else "broker_failed",'BSmode':True,'entrycond':Signal,'exitcond':self.oppocond(Signal),'entry_id':self._next_entry_id(),'live':trade['live'],
+            'exch':exch,'current_price':float(pricesss),'botcode':trade['botcode'],'optiontoken':int(optiontoken),'trail_stoploss':0,
+            'broker_order_results': broker_order_results}
             self.opositions_collection.insert_one(pos)
-            self.strategy_collection.update_one({'botcode': trade['botcode']}, {'$set': {'position':'in'} })
+            self.strategy_collection.update_one(
+                {'botcode': trade['botcode'], 'user': trade['user']},
+                {
+                    '$set': {
+                        'position': 'in' if broker_order_success else 'out',
+                        'entry_order_state': (
+                            'success' if broker_order_success else 'broker_failed'
+                        ),
+                        'last_broker_order_error': (
+                            [] if broker_order_success else broker_order_results
+                        ),
+                    }
+                },
+            )
         except Exception as e:
+            self.strategy_collection.update_one(
+                {
+                    'botcode': trade.get('botcode'),
+                    'user': trade.get('user'),
+                },
+                {
+                    '$set': {
+                        'position': 'out',
+                        'entry_order_state': 'preflight_failed',
+                        'last_broker_order_error': str(e),
+                        'last_broker_order_error_time': int(
+                            datetime.datetime.now().timestamp()
+                        ),
+                    }
+                },
+            )
+            trading_exception(
+                "future_entry_order_failed",
+                e,
+                user=trade.get("user"),
+                strategy_id=trade.get("botcode"),
+                strategy=trade.get("strategy"),
+                symbol=trade.get("symbol"),
+                side="BUY",
+            )
             print(f"Error in FBUY: {e}")
 
         
     def FSELL(self,trade,OTYPE,Signal):
         try:
+            if trade.get('live') and trade.get('entry_order_state') in {
+                'attempted', 'broker_failed'
+            }:
+                return
             
             option,optionlot,optionexpiry,optiontoken=self.MainFutureSelect(trade['symbol'],trade['Expiry'])
             #print( option,optionlot,optionexpiry)
@@ -6200,7 +6370,20 @@ class Exchange:
                 optionlot
             )
             print(instrument)
+            broker_order_results = []
             if trade['live']:
+                self.strategy_collection.update_one(
+                    {'botcode': trade['botcode'], 'user': trade['user']},
+                    {
+                        '$set': {
+                            'entry_order_state': 'attempted',
+                            'entry_order_time': int(
+                                datetime.datetime.now().timestamp()
+                            ),
+                        }
+                    },
+                )
+                trade['entry_order_state'] = 'attempted'
                 lot=trade['lot']
                 if lot>20:
                     totalquant=[trade['slicing']]*int(lot/trade['slicing'])
@@ -6209,6 +6392,7 @@ class Exchange:
                     for quant in totalquant:
                         #place_trade('NFO',trade['EntryOption'], quant, 'sell')
                         z=self.broker_collection.find_one({'user':trade['user']})
+                        ret = None
                         if z['selectedbroker']=='shoonya':
                             ret = self.shoonya[trade['user']].place_order(buy_or_sell='S', product_type='M',
                                 exchange=exch, tradingsymbol=option, 
@@ -6307,10 +6491,11 @@ class Exchange:
                                         bo_profit_value=None, bo_stop_loss_Value=None, tag=None )
                                 print(ret)
                             except Exception as e:
-                                print(f"[ERROR] Order failed but returning True anyway: {e}")
-
-                            ret = True
-                            print(ret)
+                                ret = {
+                                    'status': 'failed',
+                                    'error': str(e),
+                                }
+                                print(f"[ERROR] Dhan future SELL failed: {e}")
                         elif z['selectedbroker']=='zerodha':
                             tradingsymbol=self.kiteSymboldf[(self.kiteSymboldf['exchange']==exch)&(self.kiteSymboldf['exchange_token']==optiontoken)]['tradingsymbol'].iloc[-1]
                             ret=self.zerodha[trade['user']].place_order(tradingsymbol=tradingsymbol,
@@ -6391,10 +6576,21 @@ class Exchange:
 
                             response = requests.post('https://api.mstock.trade/openapi/typea/orders/regular', headers=headers, data=data)
                             ret=(response.json())
+                        broker_order_results.append(
+                            self._record_broker_order_result(
+                                trade,
+                                z['selectedbroker'],
+                                ret,
+                                'SELL',
+                                option,
+                                int(optionlot) * int(quant),
+                            )
+                        )
                 else:
                     #place_trade('NFO',trade['EntryOption'], trade['Lot'], 'sell')
 
                     z=self.broker_collection.find_one({'user':trade['user']})
+                    ret = None
                     if z['selectedbroker']=='shoonya':
                         ret = self.shoonya[trade['user']].place_order(buy_or_sell='S', product_type='M',
                             exchange=exch, tradingsymbol=option, 
@@ -6470,7 +6666,6 @@ class Exchange:
                         ret = self.angelone[trade['user']].placeOrder(orderparams) 
                     elif z['selectedbroker']=='dhan':
                         try:
-                            exch=trad['exch']
                             if exch=='NFO':
                                 exch1='NSE_FNO'
                             elif exch=='NSE':
@@ -6493,10 +6688,11 @@ class Exchange:
                                 bo_profit_value=None, bo_stop_loss_Value=None, tag=None )
                             print(ret)
                         except Exception as e:
-                            print(f"[ERROR] Order failed but returning True anyway: {e}")
-
-                        ret = True
-                        print(ret)
+                            ret = {
+                                'status': 'failed',
+                                'error': str(e),
+                            }
+                            print(f"[ERROR] Dhan future SELL failed: {e}")
                     elif z['selectedbroker']=='zerodha':
                         tradingsymbol=self.kiteSymboldf[(self.kiteSymboldf['exchange']==exch)&(self.kiteSymboldf['exchange_token']==optiontoken)]['tradingsymbol'].iloc[-1]
                         ret=self.zerodha[trade['user']].place_order(tradingsymbol=tradingsymbol,
@@ -6577,6 +6773,16 @@ class Exchange:
 
                         response = requests.post('https://api.mstock.trade/openapi/typea/orders/regular', headers=headers, data=data)
                         ret=(response.json())
+                    broker_order_results.append(
+                        self._record_broker_order_result(
+                            trade,
+                            z['selectedbroker'],
+                            ret,
+                            'SELL',
+                            option,
+                            int(optionlot) * int(trade['lot']),
+                        )
+                    )
                 print(ret)
             pricesss=0
             if option in list(self.prices.keys()):
@@ -6585,15 +6791,57 @@ class Exchange:
                 pricesss=float(self.sprices[option])
             else:
                 pricesss=float(self.prices[symbol])
+            broker_order_success = (not trade['live']) or (
+                bool(broker_order_results)
+                and all(result['success'] for result in broker_order_results)
+            )
             pos={'user':str(trade['user']),'botname':trade['botname'],'time':int(datetime.datetime.now().timestamp()),'symbol':symbol,'entry_price':float(pricesss)
-            ,'side':OTYPE,'status':"open",'pnl':0,'lot':trade['lot'],'initial_lot':trade['lot'],
+            ,'side':OTYPE,'status':"open" if broker_order_success else "broker_failed",'pnl':0,'lot':trade['lot'],'initial_lot':trade['lot'],
             'optionentry':float(pricesss),'optionexit':float(pricesss),'optionlot':int(optionlot),'optionexpiry':str(optionexpiry),
-            'optionname':str(option), 'pnlhalf':0,"decision":"intrade",'BSmode':False,'entrycond':Signal,'exitcond':self.oppocond(Signal),'entry_id':self._next_entry_id(),'live':trade['live'],
-            'exch':exch,'current_price':float(pricesss),'botcode':trade['botcode'],'optiontoken':int(optiontoken),'trail_stoploss':0}
-            #print(pos)
+            'optionname':str(option), 'pnlhalf':0,"decision":"intrade" if broker_order_success else "broker_failed",'BSmode':False,'entrycond':Signal,'exitcond':self.oppocond(Signal),'entry_id':self._next_entry_id(),'live':trade['live'],
+            'exch':exch,'current_price':float(pricesss),'botcode':trade['botcode'],'optiontoken':int(optiontoken),'trail_stoploss':0,
+            'broker_order_results': broker_order_results}
             self.opositions_collection.insert_one(pos)
-            self.strategy_collection.update_one({'botcode': trade['botcode']}, {'$set': {'position':'in'} })
+            self.strategy_collection.update_one(
+                {'botcode': trade['botcode'], 'user': trade['user']},
+                {
+                    '$set': {
+                        'position': 'in' if broker_order_success else 'out',
+                        'entry_order_state': (
+                            'success' if broker_order_success else 'broker_failed'
+                        ),
+                        'last_broker_order_error': (
+                            [] if broker_order_success else broker_order_results
+                        ),
+                    }
+                },
+            )
         except Exception as e:
+            self.strategy_collection.update_one(
+                {
+                    'botcode': trade.get('botcode'),
+                    'user': trade.get('user'),
+                },
+                {
+                    '$set': {
+                        'position': 'out',
+                        'entry_order_state': 'preflight_failed',
+                        'last_broker_order_error': str(e),
+                        'last_broker_order_error_time': int(
+                            datetime.datetime.now().timestamp()
+                        ),
+                    }
+                },
+            )
+            trading_exception(
+                "future_entry_order_failed",
+                e,
+                user=trade.get("user"),
+                strategy_id=trade.get("botcode"),
+                strategy=trade.get("strategy"),
+                symbol=trade.get("symbol"),
+                side="SELL",
+            )
             print(f"Error in FSELL: {e}")
 
         
@@ -9090,21 +9338,47 @@ class Exchange:
             return
         if user in self.aliceblue_depth_started:
             return
+        if user in self.aliceblue_depth_starting:
+            return
         if not self._aliceblue_user_verified_today(user):
             print(f"aliceblue market depth skipped for {user}: not verified today")
             return
         alice = getattr(self, 'alice', {}).get(user)
         if not alice:
             return
+        self.aliceblue_depth_starting.add(user)
         try:
-            alice.start_websocket(
-                socket_open_callback=lambda user=user: print(f"aliceblue market depth websocket open user={user}"),
-                socket_close_callback=lambda user=user: print(f"aliceblue market depth websocket closed user={user}"),
-                socket_error_callback=lambda error, user=user: print(f"aliceblue market depth websocket error user={user}: {error}"),
-                subscription_callback=lambda message, user=user: self._event_handler_aliceblue_depth_update(user, message),
-                run_in_background=True,
-                market_depth=True
-            )
+            try:
+                alice.start_websocket(
+                    socket_open_callback=lambda user=user: print(f"aliceblue market depth websocket open user={user}"),
+                    socket_close_callback=lambda user=user: print(f"aliceblue market depth websocket closed user={user}"),
+                    socket_error_callback=lambda error, user=user: print(f"aliceblue market depth websocket error user={user}: {error}"),
+                    subscription_callback=lambda message, user=user: self._event_handler_aliceblue_depth_update(user, message),
+                    run_in_background=True,
+                    market_depth=True
+                )
+            except Exception as first_error:
+                unauthorized = (
+                    '401' in str(first_error)
+                    or 'unauthorized' in str(first_error).lower()
+                )
+                if not unauthorized or not self._refresh_aliceblue_session(
+                    user, force=True
+                ):
+                    raise
+                alice = getattr(self, 'alice', {}).get(user)
+                if not alice:
+                    raise RuntimeError(
+                        f"AliceBlue session refresh did not create a client for {user}"
+                    ) from first_error
+                alice.start_websocket(
+                    socket_open_callback=lambda user=user: print(f"aliceblue market depth websocket open user={user}"),
+                    socket_close_callback=lambda user=user: print(f"aliceblue market depth websocket closed user={user}"),
+                    socket_error_callback=lambda error, user=user: print(f"aliceblue market depth websocket error user={user}: {error}"),
+                    subscription_callback=lambda message, user=user: self._event_handler_aliceblue_depth_update(user, message),
+                    run_in_background=True,
+                    market_depth=True
+                )
             self.aliceblue_depth_started.add(user)
             self.db["broker_health"].update_one(
                 {"user": user, "broker": "aliceblue"},
@@ -9140,6 +9414,8 @@ class Exchange:
                 broker="aliceblue",
             )
             print(f"aliceblue market depth websocket start failed user={user}: {e}")
+        finally:
+            self.aliceblue_depth_starting.discard(user)
 
     def _subscribe_aliceblue_depth_for_symbol(self, symbol, token=None, row=None):
         token = token or self.tok_symbols.get(symbol)
@@ -9446,13 +9722,35 @@ class Exchange:
             return row
         return None
 
-    def _refresh_aliceblue_session(self, user):
+    def _refresh_aliceblue_session(self, user, force=False):
         item = self.apis_collection.find_one({'user': user, 'broker': 'aliceblue'})
         if not item:
             print(f"AliceBlue relogin skipped for {user}: no aliceblue API row")
             return False
 
-        refreshed_item = self._refresh_aliceblue_auth(dict(item)) or self.apis_collection.find_one(
+        refreshed_item = self._refresh_aliceblue_auth(dict(item))
+        if not refreshed_item and force:
+            self.db["broker_health"].update_one(
+                {"user": user, "broker": "aliceblue"},
+                {
+                    "$set": {
+                        "login_status": "rejected",
+                        "websocket_status": "disconnected",
+                        "last_error": (
+                            "AliceBlue saved session was unauthorized and "
+                            "automatic session refresh failed"
+                        ),
+                        "updated_at": datetime.datetime.utcnow(),
+                    }
+                },
+                upsert=True,
+            )
+            print(
+                f"AliceBlue forced relogin failed for {user}: "
+                "automatic auth refresh did not produce a new session"
+            )
+            return False
+        refreshed_item = refreshed_item or self.apis_collection.find_one(
             {'user': user, 'broker': 'aliceblue'}
         )
         if not refreshed_item:

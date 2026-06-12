@@ -44,6 +44,13 @@ def test_aliceblue_login_persists_daily_session(monkeypatch, fake_db):
         def get_session_id(self, session_id=None):
             return {"sessionID": session_id or "fresh-session"}
 
+        def get_profile(self):
+            return {
+                "status": "Ok",
+                "message": "Success",
+                "result": [{"userId": "AB123"}],
+            }
+
     monkeypatch.setattr(
         "app.domain.brokers.adapters.aliceblue.load_trade_hub",
         lambda: FakeTradeHub,
@@ -63,6 +70,37 @@ def test_aliceblue_login_persists_daily_session(monkeypatch, fake_db):
     assert result["success"] is True
     assert saved["session_date"] == datetime.datetime.now().strftime("%Y-%m-%d")
     assert saved["user_session"] != "fresh-session"
+
+
+def test_aliceblue_login_rejects_unauthorized_saved_session(monkeypatch, fake_db):
+    class FakeTradeHub:
+        def __init__(self, **_kwargs):
+            pass
+
+        def get_session_id(self, session_id=None):
+            return {"sessionID": session_id}
+
+        def get_profile(self):
+            return {"stat": "Not_ok", "emsg": "Unauthorized"}
+
+    monkeypatch.setattr(
+        "app.domain.brokers.adapters.aliceblue.load_trade_hub",
+        lambda: FakeTradeHub,
+    )
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "aliceblue",
+        "apikey": "AB123",
+        "apisecret": "secret",
+        "user_session": "expired-session",
+    })
+    adapter = AliceBlueBrokerAdapter(db=fake_db)
+
+    result = adapter.login(BrokerCredentials(user="alice", broker="aliceblue"))
+
+    assert result["success"] is False
+    assert result["status"] == "rejected"
+    assert result["message"] == "Unauthorized"
 
 
 def test_log_sanitizer_masks_camel_case_broker_session():

@@ -53,9 +53,50 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
         if isinstance(response, dict):
             session_value = response.get("sessionID") or response.get("userSession")
         if session_value:
-            normalized["success"] = True
-            normalized["status"] = "connected"
-            if self.db is not None:
+            try:
+                profile_response = self.client.get_profile()
+                profile_result = self.normalize_response(
+                    "profile",
+                    profile_response,
+                    submitted_status="connected",
+                )
+                profile_status = str(
+                    profile_response.get("stat", "")
+                    if isinstance(profile_response, dict)
+                    else ""
+                ).strip().lower()
+                if profile_status in {"not_ok", "not ok"}:
+                    profile_result["success"] = False
+                    profile_result["status"] = "rejected"
+                    profile_result["message"] = (
+                        profile_response.get("emsg")
+                        or profile_response.get("message")
+                        or "AliceBlue rejected the saved session"
+                    )
+            except Exception as exc:
+                trading_exception(
+                    "broker_login_profile_error",
+                    exc,
+                    user=credentials.user,
+                    broker=self.broker_name,
+                )
+                profile_result = {
+                    "success": False,
+                    "broker": self.broker_name,
+                    "action": "profile",
+                    "status": "rejected",
+                    "message": str(exc),
+                    "raw": None,
+                }
+            normalized["success"] = bool(profile_result["success"])
+            normalized["status"] = (
+                "connected" if normalized["success"] else "rejected"
+            )
+            normalized["message"] = (
+                "ok" if normalized["success"] else profile_result["message"]
+            )
+            normalized["profile_check"] = profile_result
+            if normalized["success"] and self.db is not None:
                 encrypted_session = encrypt_secret(session_value)
                 self.db["apis"].update_one(
                     {"user": credentials.user, "broker": self.broker_name},

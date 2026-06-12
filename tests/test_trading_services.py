@@ -8,6 +8,8 @@ import pytest
 from app.domain.backtesting.service import BacktestService
 from app.domain.brokers.adapters import BrokerAdapterFactory, BrokerCredentials, BrokerOrder
 from app.domain.brokers.adapters.aliceblue import load_trade_hub
+from app.domain.brokers.adapters.aliceblue import AliceBlueBrokerAdapter
+from app.domain.brokers.adapters.base import BrokerCredentials
 from app.domain.brokers.health import BrokerHealthService
 from app.domain.audit.service import AuditLogService
 from app.domain.orders.lifecycle import OrderLifecycleService
@@ -32,6 +34,35 @@ def test_aliceblue_sdk_import_reports_nested_missing_dependency(monkeypatch):
 
     with pytest.raises(ImportError, match="Python module 'setuptools' is missing"):
         load_trade_hub()
+
+
+def test_aliceblue_login_persists_daily_session(monkeypatch, fake_db):
+    class FakeTradeHub:
+        def __init__(self, **_kwargs):
+            pass
+
+        def get_session_id(self, session_id=None):
+            return {"sessionID": session_id or "fresh-session"}
+
+    monkeypatch.setattr(
+        "app.domain.brokers.adapters.aliceblue.load_trade_hub",
+        lambda: FakeTradeHub,
+    )
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "aliceblue",
+        "apikey": "AB123",
+        "apisecret": "secret",
+        "auth_code": "auth",
+    })
+    adapter = AliceBlueBrokerAdapter(db=fake_db)
+
+    result = adapter.login(BrokerCredentials(user="alice", broker="aliceblue"))
+    saved = fake_db["apis"].find_one({"user": "alice", "broker": "aliceblue"})
+
+    assert result["success"] is True
+    assert saved["session_date"] == datetime.datetime.now().strftime("%Y-%m-%d")
+    assert saved["user_session"] != "fresh-session"
 
 
 def test_log_sanitizer_masks_camel_case_broker_session():

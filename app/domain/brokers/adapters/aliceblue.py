@@ -1,6 +1,8 @@
 import contextlib
+import datetime
 import io
 
+from app.core.secrets import encrypt_secret
 from app.core.trading_debug import trading_event, trading_exception
 from .live_base import NormalizedLiveBrokerAdapter
 
@@ -47,9 +49,25 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
         with contextlib.redirect_stdout(io.StringIO()):
             response = self.client.get_session_id(session_id=session_id) if session_id else self.client.get_session_id()
         normalized = self.normalize_response("login", response, submitted_status="connected")
-        if isinstance(response, dict) and (response.get("sessionID") or response.get("userSession")):
+        session_value = None
+        if isinstance(response, dict):
+            session_value = response.get("sessionID") or response.get("userSession")
+        if session_value:
             normalized["success"] = True
             normalized["status"] = "connected"
+            if self.db is not None:
+                encrypted_session = encrypt_secret(session_value)
+                self.db["apis"].update_one(
+                    {"user": credentials.user, "broker": self.broker_name},
+                    {
+                        "$set": {
+                            "user_session": encrypted_session,
+                            "sessionID": encrypted_session,
+                            "session_date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                        }
+                    },
+                    upsert=True,
+                )
         self.update_login_health(credentials.user, normalized["success"], normalized["message"])
         return normalized
 

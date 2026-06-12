@@ -34,7 +34,7 @@ import requests
 
 from app.core.config import AppConfig
 from app.core.trading_debug import trading_event, trading_exception
-from app.core.secrets import decrypt_secret, decrypt_secret_fields
+from app.core.secrets import decrypt_secret, decrypt_secret_fields, encrypt_secret
 from app.domain.brokers.health import SECRET_FIELD_NAMES
 
 ALICEBLUE_DNS_HOSTS = {
@@ -1306,6 +1306,18 @@ class Exchange:
             if isinstance(session_id, dict):
                 session_value = session_id.get('sessionID') or session_id.get('userSession')
                 if session_value:
+                    encrypted_session = encrypt_secret(session_value)
+                    self.apis_collection.update_one(
+                        {'user': item['user'], 'broker': 'aliceblue'},
+                        {
+                            '$set': {
+                                'user_session': encrypted_session,
+                                'sessionID': encrypted_session,
+                                'session_date': str(datetime.datetime.now().date()),
+                            }
+                        },
+                        upsert=True,
+                    )
                     normalized_session = dict(session_id)
                     normalized_session['sessionID'] = session_value
                     return item['user'], alice_instance, normalized_session
@@ -8794,7 +8806,7 @@ class Exchange:
         session_value = self._aliceblue_saved_session(api_info)
         session_date = str(api_info.get('session_date') or api_info.get('date') or '')
         today = str(datetime.datetime.now().date())
-        return bool(session_value and (not session_date or session_date == today))
+        return bool(session_value and session_date == today)
 
     def _ensure_aliceblue_market_depth(self, user):
         if not getattr(self, 'aliceblue_market_depth_enabled', False):

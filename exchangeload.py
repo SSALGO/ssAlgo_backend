@@ -235,6 +235,14 @@ class DeferredTrader:
     def wait_ready(self, timeout=None):
         return self._ready.wait(timeout)
 
+    def stop(self):
+        trader_instance = self._trader
+        if trader_instance is None:
+            return
+        shutdown = getattr(trader_instance, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+
     def __getattr__(self, name):
         self._ready.wait()
         if self._error is not None:

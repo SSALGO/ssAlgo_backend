@@ -1762,6 +1762,20 @@ class Exchange:
             t.daemon = True
             t.start()
 
+    def shutdown(self):
+        self._shutdown_event.set()
+        for client in (getattr(self, "api", None), getattr(self, "reapi", None)):
+            if client is None:
+                continue
+            for method_name in ("stop_websocket", "close_websocket", "disconnect"):
+                method = getattr(client, method_name, None)
+                if callable(method):
+                    try:
+                        method()
+                    except Exception as exc:
+                        print(f"strategy engine shutdown warning: {exc}")
+                    break
+
     # ============== Refactored Login Methods (Keep Same Names) ==============
 
     def _loginusers(self):
@@ -1943,7 +1957,7 @@ class Exchange:
         self.dataframes1d = dbfile
 
     def _stopnotsubusers(self):
-        while True:
+        while not self._shutdown_event.is_set():
             try:
                 if (datetime.datetime.today().weekday() < self.marketdays) and datetime.time(9,30) < datetime.datetime.now().time() and datetime.time(15,28) > datetime.datetime.now().time():
                     uss=pd.DataFrame(list(self.subscriptionperiod_collection.find()))
@@ -2588,7 +2602,7 @@ class Exchange:
     def _dataorderscript(self):
         
         #self.api.subscribe(self.subscribe_list)
-        while True:
+        while not self._shutdown_event.is_set():
             try:
 
                 pos=list(self.opositions_collection.find({'status': 'open'}))
@@ -2617,15 +2631,18 @@ class Exchange:
                 for i in unique_mains:
                     self.process_order_strategy(i)
                 #print(f'total length {len(mains)}')
-                time.sleep(1)
+                if self._shutdown_event.wait(1):
+                    break
                 if self.testmode:
                     #print(self.prices)
-                    time.sleep(1)
+                    if self._shutdown_event.wait(1):
+                        break
                 #print(f'data : {str(datetime.datetime.now())}')
             except Exception as e:
                 #"staprint(Exception)
                 print(f"Error in _order datascript: {e}")
-                time.sleep(1)
+                if self._shutdown_event.wait(1):
+                    break
                 pass
     
 
@@ -2635,7 +2652,7 @@ class Exchange:
         self.timestamp = int(midnight.timestamp())
         if self.api is not None and hasattr(self.api, "subscribe"):
             self.api.subscribe(self.subscribe_list)
-        while True:
+        while not self._shutdown_event.is_set():
             try:
                 #print(self.prices)
                 #time.sleep(1)
@@ -2649,12 +2666,14 @@ class Exchange:
                 #time.sleep(1)
                 if self.testmode:
                     #print(self.prices)
-                    time.sleep(1)
+                    if self._shutdown_event.wait(1):
+                        break
                 #print(f'data : {str(datetime.datetime.now())}')
             except Exception as e:
                 #"staprint(Exception)
                 print(f"Error in _dataequityscript: {e}")
-                time.sleep(1)
+                if self._shutdown_event.wait(1):
+                    break
                 pass
 
     def _datascript(self):
@@ -7634,13 +7653,43 @@ class Exchange:
                     now_time > datetime.datetime.strptime(config['ExitTime'], '%H:%M').time()
                 )
 
-                rollover = datetime.datetime.strptime(trade['optionexpiry'], "%Y-%m-%d") - \
-                           datetime.timedelta(days=config['DaysHead'])
-
-                expiry_exit = (
-                    now_time > datetime.datetime.strptime(config['RolloverTime'], '%H:%M').time() and
-                    str(datetime.date.today()) in [trade['optionexpiry'], str(rollover.date())]
-                )
+                option_expiry = str(trade.get('optionexpiry') or '').strip()
+                expiry_exit = False
+                if option_expiry and option_expiry.upper() != 'PERPETUAL':
+                    try:
+                        rollover = (
+                            datetime.datetime.strptime(option_expiry, "%Y-%m-%d")
+                            - datetime.timedelta(days=config['DaysHead'])
+                        )
+                        expiry_exit = (
+                            now_time
+                            > datetime.datetime.strptime(
+                                config['RolloverTime'], '%H:%M'
+                            ).time()
+                            and str(datetime.date.today())
+                            in [option_expiry, str(rollover.date())]
+                        )
+                    except (TypeError, ValueError) as expiry_error:
+                        warning_key = (
+                            trade.get('user'),
+                            trade.get('botcode'),
+                            'invalid_expiry',
+                        )
+                        now_monotonic = time.monotonic()
+                        last_warning = self._price_unavailable_log_times.get(
+                            warning_key, 0
+                        )
+                        if now_monotonic - last_warning >= 30:
+                            print(
+                                "OBUYEXIT expiry check skipped: "
+                                f"user={trade.get('user')}, "
+                                f"botcode={trade.get('botcode')}, "
+                                f"optionexpiry={option_expiry}, "
+                                f"error={expiry_error}"
+                            )
+                            self._price_unavailable_log_times[warning_key] = (
+                                now_monotonic
+                            )
 
                 # ------------------ EXIT CONDITIONS ------------------
                 exit_reason = None
@@ -10418,7 +10467,12 @@ class Exchange:
             exchange, token = token_map.get(symbol, (None, None))
             return self._get_market_price(symbol, exchange, token)
         except Exception as e:
-            print(f"underlying quote fallback failed for {symbol}: {e}")
+            warning_key = ('underlying', symbol)
+            now_monotonic = time.monotonic()
+            last_warning = self._price_unavailable_log_times.get(warning_key, 0)
+            if now_monotonic - last_warning >= 30:
+                print(f"underlying quote fallback failed for {symbol}: {e}")
+                self._price_unavailable_log_times[warning_key] = now_monotonic
             return float(fallback or 0)
 
     def _make_instrument(self, exchange, token, symbol, name, lot_size):

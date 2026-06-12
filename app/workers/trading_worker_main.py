@@ -119,6 +119,8 @@ def main():
         worker.control.heartbeat(state="running", strategy_engine="disabled", strategy_engine_error="")
 
     def stop_worker(_signum, _frame):
+        if strategy_runtime:
+            strategy_runtime.stop()
         worker.stop()
 
     signal.signal(signal.SIGINT, stop_worker)

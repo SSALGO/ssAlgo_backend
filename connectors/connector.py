@@ -7710,7 +7710,11 @@ class Exchange:
 
             # ---------------- PRICE FETCH ---------------- #
 
-            pricesss = self._get_market_price(option, exch, optiontoken)
+            pricesss = self._wait_for_market_price(
+                option,
+                exch,
+                optiontoken,
+            )
 
             print(f"option price: {pricesss}")
             print(instrument)
@@ -8421,6 +8425,13 @@ class Exchange:
         try:
             if trade.get('live') and trade.get('entry_order_state') in {'attempted', 'broker_failed'}:
                 return
+            if trade.get('live') and trade.get('entry_order_state') == 'preflight_failed':
+                retry_after = int(
+                    os.getenv("SSLAGO_ORDER_PREFLIGHT_RETRY_SECONDS", "30")
+                )
+                last_failure = int(trade.get('last_broker_order_error_time') or 0)
+                if int(datetime.datetime.now().timestamp()) - last_failure < retry_after:
+                    return
 
 
             # ---------- OPTION SELECTION ---------- #
@@ -8493,7 +8504,11 @@ class Exchange:
 
             # ---------- PRICE ---------- #
 
-            pricesss = self._get_market_price(option, exch, optiontoken)
+            pricesss = self._wait_for_market_price(
+                option,
+                exch,
+                optiontoken,
+            )
 
             print(f"option price: {pricesss}")
 
@@ -8743,7 +8758,37 @@ class Exchange:
                 )
 
         except Exception as e:
-
+            error_text = str(e)
+            failure_time = int(datetime.datetime.now().timestamp())
+            self.strategy_collection.update_one(
+                {
+                    'botcode': trade.get('botcode'),
+                    'user': trade.get('user'),
+                },
+                {
+                    '$set': {
+                        'position': 'out',
+                        'entry_order_state': 'preflight_failed',
+                        'last_broker_order_error': error_text,
+                        'last_broker_order_error_time': failure_time,
+                    }
+                },
+            )
+            trade['entry_order_state'] = 'preflight_failed'
+            trade['last_broker_order_error'] = error_text
+            trade['last_broker_order_error_time'] = failure_time
+            trading_exception(
+                "option_entry_order_failed",
+                e,
+                user=trade.get("user"),
+                strategy_id=trade.get("botcode"),
+                strategy=trade.get("strategy"),
+                symbol=trade.get("symbol"),
+                selected_broker=self._selected_broker_for_user(
+                    trade.get("user")
+                ),
+                entry_order_state=trade.get("entry_order_state"),
+            )
             print(f"Error in OSELL: {e}")
 
 
@@ -11151,6 +11196,36 @@ class Exchange:
 
         return None
 
+    def _get_fresh_depth_market_price(self, symbol, exchange=None, token=None):
+        depth_candidates = []
+        market_depths = getattr(self, 'market_depths', {})
+        if symbol:
+            depth_candidates.append(market_depths.get(str(symbol)))
+        if exchange and token:
+            depth_candidates.append(market_depths.get(f"{exchange}|{token}"))
+
+        for depth in depth_candidates:
+            if not isinstance(depth, dict) or not self._is_depth_fresh(depth):
+                continue
+            price = self._first_positive_float(
+                depth.get('lp'),
+                depth.get('ltp'),
+                depth.get('last_price'),
+                depth.get('lastPrice'),
+            )
+            if price is None:
+                bid, ask = self._extract_level1_from_depth(depth)
+                if bid and ask:
+                    price = (float(bid) + float(ask)) / 2
+                else:
+                    price = ask or bid
+            if price is None or self._is_suspicious_option_price(symbol, price):
+                continue
+            price = float(price)
+            self.prices[symbol] = price
+            return price
+        return None
+
     def _get_market_price(self, symbol, exchange=None, token=None):
         """Return latest LTP, falling back to the latest candle close."""
         for source in (self.prices, self.sprices):
@@ -11160,6 +11235,14 @@ class Exchange:
                     print(f"suspicious cached option price ignored for {symbol}: {price}")
                     continue
                 return price
+
+        depth_price = self._get_fresh_depth_market_price(
+            symbol,
+            exchange,
+            token,
+        )
+        if depth_price is not None:
+            return depth_price
 
         quote_price = self._get_direct_quote_price(symbol, exchange, token)
         if quote_price is not None:
@@ -11175,6 +11258,34 @@ class Exchange:
             return float(df['close'].iloc[-1])
 
         raise KeyError(f"{symbol} price unavailable")
+
+    def _wait_for_market_price(
+        self,
+        symbol,
+        exchange=None,
+        token=None,
+        timeout_seconds=None,
+        poll_interval=0.25,
+    ):
+        if timeout_seconds is None:
+            try:
+                timeout_seconds = float(
+                    os.getenv("SSLAGO_OPTION_QUOTE_WAIT_SECONDS", "5")
+                )
+            except (TypeError, ValueError):
+                timeout_seconds = 5
+        timeout_seconds = max(0, float(timeout_seconds))
+        deadline = time.monotonic() + timeout_seconds
+        last_error = None
+
+        while True:
+            try:
+                return self._get_market_price(symbol, exchange, token)
+            except KeyError as exc:
+                last_error = exc
+            if time.monotonic() >= deadline:
+                raise last_error or KeyError(f"{symbol} price unavailable")
+            time.sleep(min(float(poll_interval), max(0, deadline - time.monotonic())))
 
     def _get_underlying_price(self, symbol, fallback=0):
         token_map = {

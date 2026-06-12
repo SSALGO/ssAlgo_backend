@@ -1,6 +1,7 @@
 import datetime
 import builtins
 import sys
+import time
 import types
 
 import pytest
@@ -315,6 +316,55 @@ def test_aliceblue_refresh_persists_direct_auth_session(monkeypatch, fake_db):
     assert decrypt_secret(saved["user_session"]) == "fresh-session"
     assert health["login_status"] == "connected"
     assert health["last_error"] == ""
+
+
+def test_market_price_uses_fresh_aliceblue_depth_when_ltp_is_missing():
+    exchange = Exchange.__new__(Exchange)
+    exchange.prices = {}
+    exchange.sprices = {}
+    exchange.dataframes = {}
+    exchange.api = None
+    exchange.market_depth_max_age_seconds = 3
+    exchange.market_depths = {
+        "NFO|12345": {
+            "bp1": 100,
+            "sp1": 102,
+            "_depth_time": time.time(),
+        }
+    }
+
+    price = exchange._get_market_price(
+        "NIFTY16JUN26C23600",
+        "NFO",
+        12345,
+    )
+
+    assert price == 101
+    assert exchange.prices["NIFTY16JUN26C23600"] == 101
+
+
+def test_option_quote_wait_allows_websocket_tick_to_arrive():
+    exchange = Exchange.__new__(Exchange)
+    attempts = {"count": 0}
+
+    def get_market_price(_symbol, _exchange=None, _token=None):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise KeyError("price unavailable")
+        return 123.45
+
+    exchange._get_market_price = get_market_price
+
+    price = exchange._wait_for_market_price(
+        "NIFTY16JUN26C23600",
+        "NFO",
+        12345,
+        timeout_seconds=0.1,
+        poll_interval=0.001,
+    )
+
+    assert price == 123.45
+    assert attempts["count"] == 3
 
 
 def test_log_sanitizer_masks_camel_case_broker_session():

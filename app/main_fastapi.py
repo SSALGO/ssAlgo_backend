@@ -1,3 +1,6 @@
+import logging
+from urllib.parse import urlsplit
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -18,6 +21,9 @@ from app.core.config import AppConfig
 from app.core.database import get_database
 
 
+logger = logging.getLogger(__name__)
+
+
 app = FastAPI(
     title="ssAlgo API",
     version="0.1.0",
@@ -31,6 +37,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def verify_database_connection():
+    db = get_database()
+    db.command("ping")
+    if db.name != AppConfig.MONGO_DB:
+        raise RuntimeError(
+            f"MongoDB mismatch: connected database={db.name}, "
+            f"configured database={AppConfig.MONGO_DB}"
+        )
+    mongo_host = urlsplit(AppConfig.MONGO_URI).hostname or "unknown"
+    logger.info(
+        "API MongoDB ping succeeded: host=%s database=%s",
+        mongo_host,
+        db.name,
+    )
 
 
 @app.get("/health")

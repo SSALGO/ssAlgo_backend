@@ -535,6 +535,7 @@ class Exchange:
         self._debug_last_feed_log = 0
         self._debug_strategy_eval_log_times = {}
         self._debug_legacy_login_log_times = {}
+        self._price_unavailable_log_times = {}
         self.sessionusertoken=sessionusertoken
         trading_event("strategy_engine_stage", force=True, stage="remote_instrument_masters")
         self.tokdf = pd.DataFrame(columns=['symbolCode'])
@@ -7554,25 +7555,41 @@ class Exchange:
                     continue
 
                 # ------------------ WEBSOCKET ------------------
-                connected = self.add_symbol_to_websocket(trade['optionname'])
+                subscription_failed = self.add_symbol_to_websocket(trade['optionname'])
 
-                if self.websocketretry > 10:
+                if not subscription_failed and self.websocketretry > 10:
                     print('websocket repair')
                     self.add_symbol_to_websocket(trade['optionname'], force=True)
                     if trade['optionname'] in self.prices:
                         self.websocketretry = 0
 
-                if trade['optionname'] not in self.prices:
+                if not subscription_failed and trade['optionname'] not in self.prices:
                     self.websocketretry += 1
 
                 # ------------------ PRICE ------------------
-                price = self._get_market_price(
-                    trade['optionname'],
-                    trade.get('exch'),
-                    trade.get('optiontoken')
-                )
-                if price is None:
+                try:
+                    price = self._get_market_price(
+                        trade['optionname'],
+                        trade.get('exch'),
+                        trade.get('optiontoken')
+                    )
+                except (KeyError, ValueError, TypeError) as price_error:
                     price = float(trade.get('optionexit') or trade.get('optionentry') or 0)
+                    warning_key = (
+                        trade.get('user'),
+                        trade.get('botcode'),
+                        trade.get('optionname'),
+                    )
+                    now_monotonic = time.monotonic()
+                    last_warning = self._price_unavailable_log_times.get(warning_key, 0)
+                    if now_monotonic - last_warning >= 30:
+                        print(
+                            "OBUYEXIT quote unavailable; using stored price: "
+                            f"user={trade.get('user')}, botcode={trade.get('botcode')}, "
+                            f"symbol={trade.get('optionname')}, price={price}, "
+                            f"error={price_error}"
+                        )
+                        self._price_unavailable_log_times[warning_key] = now_monotonic
 
                 trade['optionexit'] = price
                 trade['current_price'] = self._get_underlying_price(

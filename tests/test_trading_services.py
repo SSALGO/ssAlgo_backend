@@ -17,6 +17,7 @@ from app.domain.risk.service import RiskControlService
 from app.workers.trading_worker import TradingWorker
 from app.core.logging_config import sanitize_log_value
 from app.core.secrets import decrypt_secret, encrypt_secret
+from models import EMA_mode
 
 
 def test_aliceblue_sdk_import_reports_nested_missing_dependency(monkeypatch):
@@ -107,6 +108,86 @@ def test_paper_order_creates_normalized_lifecycle(fake_db):
     assert [event["status"] for event in order["events"]] == ["created", "submitted", "filled"]
 
 
+def _algorithm_143_payload(**overrides):
+    payload = {
+        "botname": "Algo143Smoke",
+        "user": "alice",
+        "symbol": "NIFTY",
+        "Expiry": "Current Week",
+        "timeframe": "3m",
+        "r1": "19",
+        "k1": "20",
+        "Newsignal": "true",
+        "USEMA": "false",
+        "ema": "200",
+        "Intraday": "true",
+        "FixedLot": "FixedLot",
+        "BSmode": "true",
+        "pct_point": "false",
+        "pnlexit_tpslexit": "false",
+        "strike": "0",
+        "lot": "1",
+        "initiallot": "1",
+        "ttw": "0",
+        "stepvalue": "1",
+        "MultiFactor": "1",
+        "candle1": "1",
+        "candle2": "2",
+        "slicing": "20",
+        "DaysHead": "0",
+        "RolloverTime": "13:01",
+        "StartTime": "09:17",
+        "ExitTime": "15:20",
+        "trail": "1",
+        "trail_stoploss": "1000",
+        "tp": "24999",
+        "sl": "24999",
+        "status": "paused",
+        "maxprofit": "100000",
+        "maxloss": "100000",
+        "live": "false",
+        "position": "out",
+        "botcode": "ALG143",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_algorithm_143_options_configuration_loads_required_fields():
+    strategy = EMA_mode(_algorithm_143_payload())
+
+    assert strategy.strategy == "EMA"
+    assert strategy.botcode == "ALG143"
+    assert strategy.symbol == "NIFTY"
+    assert strategy.timeframe == "3m"
+    assert strategy.r1 == 19
+    assert strategy.k1 == 20
+    assert strategy.Newsignal is True
+    assert strategy.USEMA is False
+    assert strategy.BSmode is True
+    assert strategy.lot == 1
+    assert strategy.initiallot == 1
+    assert strategy.trail == 1
+    assert strategy.trail_stoploss == 1000
+    assert strategy.tp == 24999
+    assert strategy.sl == 24999
+    assert strategy.live is False
+    assert strategy.position == "out"
+
+
+def test_algorithm_143_rejects_invalid_quantity_input():
+    with pytest.raises(ValueError):
+        EMA_mode(_algorithm_143_payload(lot="bad"))
+
+
+def test_algorithm_143_rejects_missing_required_input():
+    payload = _algorithm_143_payload()
+    payload.pop("botname")
+
+    with pytest.raises(KeyError):
+        EMA_mode(payload)
+
+
 def test_order_lifecycle_transition():
     from conftest import FakeDatabase
 
@@ -115,6 +196,21 @@ def test_order_lifecycle_transition():
     order = lifecycle.transition(order_id, "cancelled", {"reason": "test"})
     assert order["status"] == "cancelled"
     assert order["events"][-1]["data"]["reason"] == "test"
+
+
+def test_order_lifecycle_tracks_partial_and_rejected_statuses():
+    from conftest import FakeDatabase
+
+    lifecycle = OrderLifecycleService(FakeDatabase())
+    partial_id = lifecycle.create_order("alice", "paper", "NIFTY", "BUY", 2, strategy_id="ALG143")
+    partial = lifecycle.transition(partial_id, "partial_fill", {"filled_quantity": 1})
+    assert partial["status"] == "partial_fill"
+    assert partial["events"][-1]["data"]["filled_quantity"] == 1
+
+    rejected_id = lifecycle.create_order("alice", "paper", "NIFTY", "BUY", 1, strategy_id="ALG143")
+    rejected = lifecycle.transition(rejected_id, "rejected", {"reason": "Insufficient balance"})
+    assert rejected["status"] == "rejected"
+    assert rejected["events"][-1]["data"]["reason"] == "Insufficient balance"
 
 
 def test_audit_log_masks_sensitive_details(fake_db):
@@ -353,6 +449,60 @@ def test_risk_blocks_stale_live_quotes_when_enabled(fake_db):
 
     assert result.allowed is False
     assert "stale" in result.reason.lower()
+
+
+def test_risk_blocks_live_order_without_connected_broker_health(fake_db):
+    fake_db["risk_settings"].insert_one({
+        "user": "alice",
+        "live_enabled": True,
+        "paper_only": False,
+        "block_on_broker_disconnect": True,
+    })
+
+    result = RiskControlService(fake_db).check_order(BrokerOrder(
+        user="alice",
+        broker="dhan",
+        symbol="NIFTY",
+        side="BUY",
+        quantity=1,
+        strategy_id="ALG143",
+        metadata={"idempotency_key": "algo143-live-1"},
+    ))
+
+    assert result.allowed is False
+    assert "Broker login is not connected" in result.reason
+
+
+def test_risk_blocks_duplicate_live_idempotency_key(fake_db):
+    fake_db["risk_settings"].insert_one({
+        "user": "alice",
+        "live_enabled": True,
+        "paper_only": False,
+    })
+    fake_db["broker_health"].insert_one({
+        "user": "alice",
+        "broker": "dhan",
+        "login_status": "connected",
+        "websocket_status": "connected",
+    })
+    fake_db["strategy_jobs"].insert_one({
+        "user": "alice",
+        "status": "completed",
+        "idempotency_key": "algo143-live-1",
+    })
+
+    result = RiskControlService(fake_db).check_order(BrokerOrder(
+        user="alice",
+        broker="dhan",
+        symbol="NIFTY",
+        side="BUY",
+        quantity=1,
+        strategy_id="ALG143",
+        metadata={"idempotency_key": "algo143-live-1"},
+    ))
+
+    assert result.allowed is False
+    assert "Duplicate live order idempotency key" in result.reason
 
 
 def test_risk_production_live_defaults_enable_required_gates(fake_db):

@@ -56,7 +56,14 @@ def get_database():
     if db is not None:
         return db
     try:
-        client = pymongo.MongoClient(AppConfig.MONGO_URI, maxPoolSize=100)
+        timeout_ms = int(os.getenv("SSLAGO_MONGO_TIMEOUT_MS", "10000"))
+        client = pymongo.MongoClient(
+            AppConfig.MONGO_URI,
+            maxPoolSize=100,
+            serverSelectionTimeoutMS=timeout_ms,
+            connectTimeoutMS=timeout_ms,
+        )
+        client.admin.command("ping")
         db = client[AppConfig.MONGO_DB]
         logging.info("MongoDB connection established")
     except Exception as exc:
@@ -241,7 +248,7 @@ sessionusertoken = None
 
 trader = DeferredTrader()
 
-def start_trader():
+def start_trader(database=None):
     """Start the legacy market-data and strategy evaluator exactly once."""
     if trader.status()["state"] in {"running", "starting"}:
         return trader
@@ -249,7 +256,7 @@ def start_trader():
     try:
         from connectors.connector import Exchange
 
-        database = get_database()
+        database = database if database is not None else get_database()
         if database is None:
             raise RuntimeError("MongoDB is unavailable")
 

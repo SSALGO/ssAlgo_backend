@@ -39,6 +39,27 @@ $env:SSLAGO_ENABLE_LEGACY_STRATEGY_ENGINE = "true"
 
 On Windows, `runbot.bat` starts both the trading runtime and the API.
 
+On Ubuntu:
+
+```bash
+cd ~/ssAlgo_backend
+source venv/bin/activate
+export PYTHONUNBUFFERED=1
+export SSLAGO_ENABLE_LEGACY_STRATEGY_ENGINE=true
+export DEBUG_TRADING=true
+python -m app.workers.trading_worker_main
+```
+
+Startup now fails with a non-zero exit if MongoDB cannot be reached or the
+legacy strategy engine cannot initialize. It also logs every database position
+with `status: open` because those positions remain under exit management even
+when the corresponding strategy is paused.
+
+The worker, command queue, broker health services, and legacy strategy engine
+share the same database object created from `SSLAGO_MONGO_URI` and
+`SSLAGO_MONGO_DB`. Startup logs the Mongo host and database name without
+printing credentials.
+
 ## Trading Debug Mode
 
 Enable structured decision, risk, feed, and broker logs while diagnosing a

@@ -364,7 +364,7 @@ class RiskControlService:
             health = self._broker_health(user, broker)
             websocket_status = str(health.get("websocket_status") or "").lower()
             login_status = str(health.get("login_status") or "").lower()
-            if login_status and login_status != "connected":
+            if login_status != "connected":
                 return RiskCheckResult(False, "Broker login is not connected", checks)
             if websocket_status and websocket_status not in {"connected", "unknown"}:
                 return RiskCheckResult(False, "Broker websocket is disconnected", checks)

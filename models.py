@@ -671,6 +671,45 @@ class EQSSALGO_mode:
         self.timetowait:int = j
 
 
+class MCXSTRATEGY_mode:
+    def __init__(self, order):
+        j = int(datetime.datetime.now().timestamp())
+        self.entry_id: int = 0
+        self.botname: str = order['botname']
+        self.user: str = order['user']
+        self.time: int = j
+        self.exchange: str = 'MCX'
+        self.symbol: str = order['symbol']
+        self.Expiry: str = order.get('Expiry', 'Current Month')
+        self.timeframe: str = order['timeframe']
+        self.mcx_strategy_type: str = order['mcx_strategy_type']
+        self.trade_side: str = order['trade_side']
+        self.product_type: str = order['product_type']
+        self.order_type: str = order['order_type']
+        self.range_minutes: int = int(order['range_minutes'])
+        self.atr_period: int = int(order['atr_period'])
+        self.breakout_atr_multiple: float = float(order['breakout_atr_multiple'])
+        self.stop_atr_multiple: float = float(order['stop_atr_multiple'])
+        self.target_r_multiple: float = float(order['target_r_multiple'])
+        self.adx_min: int = int(order['adx_min'])
+        self.ema_fast: int = int(order['ema_fast'])
+        self.ema_slow: int = int(order['ema_slow'])
+        self.lot: int = int(order['lot'])
+        self.max_trades_per_day: int = int(order['max_trades_per_day'])
+        self.risk_per_trade_pct: float = float(order['risk_per_trade_pct'])
+        self.maxprofit: int = int(order['maxprofit'])
+        self.maxloss: int = int(order['maxloss'])
+        self.StartTime: str = order['StartTime']
+        self.ExitTime: str = order['ExitTime']
+        self.Intraday: bool = order['Intraday'].lower() == 'true'
+        self.live: bool = order['live'].lower() == 'true'
+        self.status: str = order['status']
+        self.position: str = order['position']
+        self.strategy: str = 'MCXSTRATEGY'
+        self.botcode: str = order['botcode']
+        self.timetowait: int = j
+
+
 
 
 

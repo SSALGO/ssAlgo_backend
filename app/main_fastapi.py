@@ -9,7 +9,6 @@ from app.api.fastapi_routers import (
     backtest_router,
     broker_router,
     legacy_router,
-    mcx_router,
     order_router,
     paper_router,
     ws_router,
@@ -69,7 +68,6 @@ app.include_router(broker_router)
 app.include_router(paper_router)
 app.include_router(order_router)
 app.include_router(backtest_router)
-app.include_router(mcx_router)
 app.include_router(worker_router)
 app.include_router(ops_router)
 app.include_router(legacy_router)

@@ -16,27 +16,11 @@ def test_fastapi_exposes_migration_and_worker_routes():
     paths = {route.path for route in fastapi_app.app.routes if hasattr(route, "path")}
     assert "/api/migration/legacy-routes" in paths
     assert "/api/worker/status" in paths
-    assert "/api/mcx/strategies" in paths
     assert "/api_{legacy_path:path}" not in paths
     assert "/api_users" in paths
     assert "/api_add_ssalgo" in paths
     assert "/api_pay" in paths
     assert "/api_historicalbacktest" in paths
-
-
-def test_mcx_strategy_catalog_contains_ranked_production_blueprint():
-    from app.domain.mcx.strategy_catalog import mcx_strategy_catalog
-
-    catalog = mcx_strategy_catalog()
-
-    assert catalog["product_name"] == "MCX Strategy Lab"
-    assert len(catalog["strategies"]) >= 6
-    assert [strategy["rank"] for strategy in catalog["top_3"]] == [1, 2, 3]
-    assert catalog["strategies"][0]["strategy_name"] == "MCX Opening Range Breakout"
-    assert catalog["complete_trading_rules"]
-    assert catalog["risk_management_framework"]["kill_switches"]
-    assert any(table["table"] == "mcx_order_executions" for table in catalog["database_schema_requirements"])
-
 
 def test_legacy_login_token_is_real_jwt(monkeypatch):
     from app.api import fastapi_routers
@@ -67,6 +51,53 @@ def test_strategy_form_templates_are_loaded_from_backend_root():
     assert eqssalgo_fields
     assert any(field.get("name") == "botname" for field in eqssalgo_fields)
     assert any(field.get("name") == "symbol[]" for field in eqssalgo_fields)
+
+    mcx_fields = forms["add_mcxstrategy_form.html"]
+    assert mcx_fields
+    assert any(field.get("name") == "mcx_strategy_type" for field in mcx_fields)
+    assert any(field.get("name") == "risk_per_trade_pct" for field in mcx_fields)
+
+
+def test_mcx_strategy_payload_builds_real_strategy_document():
+    from app.api.legacy_compat.common import build_strategy
+
+    payload = {
+        "botname": "MCX ORB",
+        "symbol": "CRUDEOIL",
+        "Expiry": "Current Month",
+        "timeframe": "5m",
+        "mcx_strategy_type": "OPENING_RANGE_BREAKOUT",
+        "trade_side": "BOTH",
+        "product_type": "MIS",
+        "order_type": "MARKET",
+        "range_minutes": "30",
+        "atr_period": "14",
+        "breakout_atr_multiple": "0.8",
+        "stop_atr_multiple": "1.2",
+        "target_r_multiple": "1.8",
+        "adx_min": "22",
+        "ema_fast": "20",
+        "ema_slow": "50",
+        "lot": "1",
+        "max_trades_per_day": "2",
+        "risk_per_trade_pct": "0.5",
+        "maxprofit": "5000",
+        "maxloss": "3000",
+        "StartTime": "17:00",
+        "ExitTime": "23:15",
+        "Intraday": "true",
+        "live": "false",
+        "status": "paused",
+        "position": "out",
+    }
+
+    doc = build_strategy("mcxstrategy", payload, {"username": "alice", "_id": "u1", "mobile": "999"})
+
+    assert doc["strategy"] == "MCXSTRATEGY"
+    assert doc["exchange"] == "MCX"
+    assert doc["symbol"] == "CRUDEOIL"
+    assert doc["mcx_strategy_type"] == "OPENING_RANGE_BREAKOUT"
+    assert doc["live"] is False
 
 
 def test_user_profile_updates_trading_limits(fake_db, monkeypatch):

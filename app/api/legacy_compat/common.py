@@ -28,6 +28,7 @@ from models import (
     PEMA_fut_mode,
     PEMA_mode,
     RF_mode,
+    MCXSTRATEGY_mode,
     SSALGO_fut_mode,
     SSALGO_mode,
     SSAUTO_fut_mode,
@@ -69,6 +70,7 @@ ADD_STRATEGY_ROUTES = {
     "/api_add_pema_fut": ("pema_fut", "FUT PEMA strategy added successfully"),
     "/api_add_ema_fut": ("ema_fut", "FUT EMA strategy added successfully"),
     "/api_add_eqssalgo": ("eqssalgo", "EQSSALGO strategy added successfully"),
+    "/api_add_mcxstrategy": ("mcxstrategy", "MCX strategy added successfully"),
     "/api_add_fractalnubiatimehedgeorder": (
         "fractalnubiatimehedgeorder",
         "FRACTALNUBIATIMEHEDGEORDER strategy added successfully",
@@ -83,6 +85,7 @@ EDIT_STRATEGY_ROUTES = {
         "FRACTALNUBIATIMEHEDGEORDER strategy updated successfully",
     ),
     "/api_edit_eqssalgo": ("eqssalgo", "EQSSALGO strategy updated successfully"),
+    "/api_edit_mcxstrategy": ("mcxstrategy", "MCX strategy updated successfully"),
     "/api_edit_ssauto": ("ssauto", "SSAUTO strategy updated successfully"),
     "/api_edit_ssequity": ("ssequity_eq", "SSEQUITY strategy updated successfully"),
     "/api_edit_ssequityfno": ("ssequityfno_eq", "SSEQUITY FNO strategy updated successfully"),
@@ -93,6 +96,7 @@ EDIT_STRATEGY_ROUTES = {
 
 ADMIN_EDIT_STRATEGY_ROUTES = {
     "/api_edit_admin_eqssalgo": ("eqssalgo", "EQSSALGO strategy updated successfully"),
+    "/api_edit_admin_mcxstrategy": ("mcxstrategy", "MCX strategy updated successfully"),
     "/api_edit_admin_ssalgo": ("ssalgo", "SSALGO strategy edited successfully"),
     "/api_edit_admin_ssauto": ("ssauto", "SSAUTO strategy edited successfully"),
     "/api_edit_admin_ema": ("ema", "EMA strategy edited successfully"),
@@ -272,6 +276,7 @@ def select_strategy_model(kind, payload):
         "ema_fut": EMA_fut_mode,
         "pema_fut": PEMA_fut_mode,
         "eqssalgo": EQSSALGO_mode,
+        "mcxstrategy": MCXSTRATEGY_mode,
         "fractalnubiatimehedgeorder": FRACTALNUBIATIMEHEDGEORDER_mode,
     }[kind]
 
@@ -374,6 +379,7 @@ def strategy_forms():
         "ssequityfno_eq",
         "sstrike",
         "eqssalgo",
+        "mcxstrategy",
         "fractalnubiatimehedgeorder",
     ]:
         path = templates_dir / f"{name}_form.html"

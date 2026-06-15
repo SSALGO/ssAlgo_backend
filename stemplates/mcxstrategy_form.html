@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% if order %}Edit MCX Strategy{% else %}Add MCX Strategy{% endif %}</title>
+  </head>
+  <body>
+    <form method="post" action="{{ action_url }}">
+      <input type="hidden" name="status" id="status" value="{% if order %}{{ order['status'] }}{% else %}paused{% endif %}" />
+      <input type="hidden" name="position" id="position" value="{% if order %}{{ order['position'] }}{% else %}out{% endif %}" />
+
+      <label for="botname">Bot Name</label>
+      <input type="text" id="botname" name="botname" value="{% if order %}{{ order['botname'] }}{% endif %}" required="True" />
+
+      <label for="symbol">MCX Symbol</label>
+      <select id="symbol" name="symbol" required="True">
+        <option value="CRUDEOIL">CRUDEOIL</option>
+        <option value="CRUDEOILM">CRUDEOILM</option>
+        <option value="NATURALGAS">NATURALGAS</option>
+        <option value="GOLD">GOLD</option>
+        <option value="GOLDM">GOLDM</option>
+        <option value="SILVER">SILVER</option>
+        <option value="SILVERM">SILVERM</option>
+        <option value="COPPER">COPPER</option>
+        <option value="ZINC">ZINC</option>
+      </select>
+
+      <label for="mcx_strategy_type">MCX Strategy Type</label>
+      <select id="mcx_strategy_type" name="mcx_strategy_type" required="True">
+        <option value="OPENING_RANGE_BREAKOUT">Opening Range Breakout</option>
+        <option value="VOLATILITY_EXPANSION">ATR Volatility Expansion</option>
+        <option value="TREND_PULLBACK">ATR Trend Pullback</option>
+      </select>
+
+      <label for="trade_side">Trade Side</label>
+      <select id="trade_side" name="trade_side" required="True">
+        <option value="BOTH">Both Buy and Sell</option>
+        <option value="BUYER">Buyer Only</option>
+        <option value="SELLER">Seller Only</option>
+      </select>
+
+      <label for="Expiry">Contract Month</label>
+      <select id="Expiry" name="Expiry" required="True">
+        <option value="Current Month">Current Month</option>
+        <option value="Next Month">Next Month</option>
+      </select>
+
+      <label for="timeframe">Timeframe</label>
+      <select id="timeframe" name="timeframe" required="True">
+        <option value="5m">5m</option>
+        <option value="15m">15m</option>
+        <option value="30m">30m</option>
+        <option value="1h">1h</option>
+      </select>
+
+      <label for="range_minutes">Opening Range Minutes</label>
+      <input type="number" id="range_minutes" name="range_minutes" min="5" max="120" value="30" required="True" />
+
+      <label for="atr_period">ATR Period</label>
+      <input type="number" id="atr_period" name="atr_period" min="5" max="50" value="14" required="True" />
+
+      <label for="breakout_atr_multiple">Breakout ATR Multiple</label>
+      <input type="number" id="breakout_atr_multiple" name="breakout_atr_multiple" min="0.1" max="5" step="0.1" value="0.8" required="True" />
+
+      <label for="stop_atr_multiple">Stop ATR Multiple</label>
+      <input type="number" id="stop_atr_multiple" name="stop_atr_multiple" min="0.1" max="5" step="0.1" value="1.2" required="True" />
+
+      <label for="target_r_multiple">Target R Multiple</label>
+      <input type="number" id="target_r_multiple" name="target_r_multiple" min="0.5" max="10" step="0.1" value="1.8" required="True" />
+
+      <label for="adx_min">ADX Minimum</label>
+      <input type="number" id="adx_min" name="adx_min" min="0" max="60" value="22" required="True" />
+
+      <label for="ema_fast">Fast EMA</label>
+      <input type="number" id="ema_fast" name="ema_fast" min="1" max="200" value="20" required="True" />
+
+      <label for="ema_slow">Slow EMA</label>
+      <input type="number" id="ema_slow" name="ema_slow" min="2" max="300" value="50" required="True" />
+
+      <label for="lot">Lots</label>
+      <input type="number" id="lot" name="lot" min="1" value="1" required="True" />
+
+      <label for="risk_per_trade_pct">Risk Per Trade (%)</label>
+      <input type="number" id="risk_per_trade_pct" name="risk_per_trade_pct" min="0.1" max="5" step="0.1" value="0.5" required="True" />
+
+      <label for="max_trades_per_day">Max Trades Per Day</label>
+      <input type="number" id="max_trades_per_day" name="max_trades_per_day" min="1" max="10" value="2" required="True" />
+
+      <label for="maxprofit">Max Daily Profit</label>
+      <input type="number" id="maxprofit" name="maxprofit" min="0" value="5000" required="True" />
+
+      <label for="maxloss">Max Daily Loss</label>
+      <input type="number" id="maxloss" name="maxloss" min="0" value="3000" required="True" />
+
+      <label for="StartTime">Start Time (IST)</label>
+      <input type="time" id="StartTime" name="StartTime" value="17:00" required="True" />
+
+      <label for="ExitTime">Exit Time (IST)</label>
+      <input type="time" id="ExitTime" name="ExitTime" value="23:15" required="True" />
+
+      <label for="Intraday">Intraday</label>
+      <select id="Intraday" name="Intraday" required="True">
+        <option value="true">Intraday</option>
+        <option value="false">Positional</option>
+      </select>
+
+      <label for="product_type">Product Type</label>
+      <select id="product_type" name="product_type" required="True">
+        <option value="MIS">MIS</option>
+        <option value="NRML">NRML</option>
+      </select>
+
+      <label for="order_type">Order Type</label>
+      <select id="order_type" name="order_type" required="True">
+        <option value="MARKET">Market</option>
+        <option value="LIMIT">Limit</option>
+      </select>
+
+      <label for="live">Execution Mode</label>
+      <select id="live" name="live" required="True">
+        <option value="false">Paper</option>
+        <option value="true">Live</option>
+      </select>
+    </form>
+  </body>
+</html>

@@ -67,6 +67,7 @@ def api_index(user=Depends(get_current_user)):
         "user": username,
         "allstrategies": {
             "Equity SSALGO": "add_eqssalgo_form",
+            "MCX Commodity Strategy": "add_mcxstrategy_form",
             "143 Options": "add_ema_form",
             "Index FUTURE 143": "add_ema_fut_form",
             "Hedge Order": "add_fractalnubiatimehedgeorder_form",

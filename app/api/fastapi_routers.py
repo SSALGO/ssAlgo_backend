@@ -1,6 +1,6 @@
 import bcrypt
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
 
 from app.api.fastapi_auth import (
     create_compatible_access_token,
@@ -14,6 +14,7 @@ from app.api.fastapi_auth import (
 from app.api.fastapi_schemas import (
     ApiResponse,
     BacktestRequest,
+    BrokerCredentialRevealRequest,
     BrokerCredentialsRequest,
     LoginRequest,
     OrderTransitionRequest,
@@ -22,7 +23,7 @@ from app.api.fastapi_schemas import (
 )
 from app.api.fastapi_services import FastAPITradingServices, get_trading_services
 from app.core.database import get_database
-from app.core.secrets import encrypt_secret_fields
+from app.core.secrets import decrypt_secret, encrypt_secret_fields
 from app.domain.audit.service import AuditLogService
 from app.domain.brokers.adapters import BrokerCredentials, BrokerOrder
 from app.domain.brokers.health import SECRET_FIELD_NAMES
@@ -225,6 +226,56 @@ def get_broker_credentials(
         if field_name in cleaned:
             cleaned[field_name] = ""
     return ApiResponse(success=True, message="Broker credentials fetched", data=cleaned)
+
+
+@broker_router.post("/{broker}/credentials/reveal", response_model=ApiResponse)
+def reveal_broker_credential(
+    broker: str,
+    payload: BrokerCredentialRevealRequest,
+    response: Response,
+    user=Depends(get_current_user),
+):
+    broker = normalize_broker_id(broker)
+    field_name = payload.field
+    if field_name not in SECRET_FIELD_NAMES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only secret credential fields can be revealed",
+        )
+
+    db = get_database()
+    doc = db["apis"].find_one({
+        "user": username(user),
+        "broker": {"$in": broker_lookup_ids(broker)},
+    }) or {}
+    if not doc or not str(doc.get(field_name, "")).strip():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Saved credential value not found",
+        )
+
+    try:
+        value = decrypt_secret(doc[field_name])
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Saved credential could not be decrypted",
+        )
+
+    AuditLogService(db).record(
+        "broker_credential_revealed",
+        user=username(user),
+        resource_type="broker_api",
+        resource_id=broker,
+        details={"broker": broker, "field": field_name},
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return ApiResponse(
+        success=True,
+        message="Broker credential revealed",
+        data={"field": field_name, "value": value},
+    )
 
 
 @paper_router.post("/orders", response_model=ApiResponse)

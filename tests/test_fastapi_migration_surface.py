@@ -118,6 +118,45 @@ def test_legacy_dashboard_uses_active_broker_health_for_connection_status(fake_d
     assert disconnected.data["broker_health"]["login_status"] == "disconnected"
 
 
+def test_broker_secret_reveal_is_owner_scoped_audited_and_not_cached(fake_db, monkeypatch):
+    from app.api import fastapi_routers
+    from app.api.fastapi_auth import get_current_user
+    from app.core.secrets import encrypt_secret
+
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "aliceblue",
+        "auth_code": encrypt_secret("alice-auth-code"),
+    })
+    fake_db["apis"].insert_one({
+        "user": "bob",
+        "broker": "aliceblue",
+        "auth_code": encrypt_secret("bob-auth-code"),
+    })
+    monkeypatch.setattr(fastapi_routers, "get_database", lambda: fake_db)
+    fastapi_app.app.dependency_overrides[get_current_user] = lambda: {"username": "alice"}
+
+    try:
+        client = TestClient(fastapi_app.app)
+        response = client.post(
+            "/api/brokers/aliceblue/credentials/reveal",
+            json={"field": "AUTH_CODE"},
+        )
+    finally:
+        fastapi_app.app.dependency_overrides.pop(get_current_user, None)
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "field": "auth_code",
+        "value": "alice-auth-code",
+    }
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
+    audit = fake_db["audit_logs"].find_one({"event": "broker_credential_revealed"})
+    assert audit["user"] == "alice"
+    assert audit["details"] == {"broker": "aliceblue", "field": "auth_code"}
+
+
 def test_worker_control_queue_and_status(fake_db):
     control = WorkerControlService(fake_db)
     queued = control.enqueue("stop", "admin")

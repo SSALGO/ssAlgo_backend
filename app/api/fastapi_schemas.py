@@ -29,6 +29,15 @@ class BrokerCredentialsRequest(BaseModel):
     activate: bool = True
 
 
+class BrokerCredentialRevealRequest(BaseModel):
+    field: str = Field(min_length=1)
+
+    @field_validator("field", mode="before")
+    @classmethod
+    def normalize_field(cls, value):
+        return str(value or "").strip().lower()
+
+
 class PaperOrderRequest(BaseModel):
     symbol: str = Field(min_length=1)
     side: str = "BUY"

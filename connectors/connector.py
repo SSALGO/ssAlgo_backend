@@ -35,8 +35,8 @@ from app.core.config import AppConfig
 from app.core.trading_debug import trading_event, trading_exception
 from app.core.secrets import decrypt_secret, decrypt_secret_fields, encrypt_secret
 from app.domain.brokers.aliceblue_auth import (
-    AliceBlueDirectAuthError,
-    AliceBlueDirectAuthenticator,
+    aliceblue_error_message,
+    classify_aliceblue_error,
 )
 from app.domain.brokers.diagnostics import log_aliceblue_diagnostic
 from app.domain.brokers.health import SECRET_FIELD_NAMES
@@ -1338,7 +1338,9 @@ class Exchange:
         decrypted = decrypt_secret_fields(dict(item), SECRET_FIELD_NAMES)
         user_id = str(decrypted.get('apikey') or '').strip()
         auth_code = str(decrypted.get('auth_code') or '').strip()
-        secret_key = str(decrypted.get('apisecret') or '').strip()
+        secret_key = str(
+            decrypted.get('apisecret') or AppConfig.ALICEBLUE_APP_SECRET or ''
+        ).strip()
         session_api_missing = [
             name
             for name, value in (
@@ -1372,6 +1374,8 @@ class Exchange:
                                 'user_session': encrypted_session,
                                 'sessionID': encrypted_session,
                                 'session_date': str(datetime.datetime.now().date()),
+                                'token_status': 'connected',
+                                'last_verified_at': datetime.datetime.utcnow(),
                             }
                         },
                         upsert=True,
@@ -1381,6 +1385,7 @@ class Exchange:
                         {
                             "$set": {
                                 "login_status": "connected",
+                                "token_status": "connected",
                                 "last_error": "",
                                 "updated_at": datetime.datetime.utcnow(),
                             }
@@ -1405,85 +1410,10 @@ class Exchange:
                     f"{type(e).__name__}"
                 )
 
-        direct_values = {
-            'user_id': user_id,
-            'password': (
-                decrypted.get('alice_password')
-                or decrypted.get('password')
-                or decrypted.get('pwd')
-            ),
-            'totp_secret': decrypted.get('totp_key'),
-            'app_code': decrypted.get('app_key'),
-            'app_secret': secret_key,
-        }
-        direct_missing = [
-            name
-            for name, value in direct_values.items()
-            if not str(value or '').strip()
-        ]
-        if direct_missing:
-            error_message = (
-                "AliceBlue automatic login is missing "
-                + ", ".join(direct_missing)
-            )
-        else:
-            try:
-                result = AliceBlueDirectAuthenticator().authenticate(
-                    **direct_values
-                )
-                refreshed_auth_code = result['auth_code']
-                refreshed_session = result['session_id']
-                alice = AliceBlueTradeHubAdapter(
-                    user_id=user_id,
-                    auth_code=refreshed_auth_code,
-                    secret_key=secret_key,
-                    session_id=refreshed_session,
-                )
-                alice.get_session_id(session_id=refreshed_session)
-                profile = alice.get_profile()
-                if not self._aliceblue_profile_is_valid(profile):
-                    raise AliceBlueDirectAuthError(
-                        "AliceBlue profile validation rejected the new session"
-                    )
-
-                encrypted_session = encrypt_secret(refreshed_session)
-                self.apis_collection.update_one(
-                    {'user': user, 'broker': 'aliceblue'},
-                    {
-                        '$set': {
-                            'auth_code': encrypt_secret(refreshed_auth_code),
-                            'user_session': encrypted_session,
-                            'sessionID': encrypted_session,
-                            'session_date': str(datetime.datetime.now().date()),
-                        }
-                    },
-                    upsert=True,
-                )
-                self.db["broker_health"].update_one(
-                    {"user": user, "broker": "aliceblue"},
-                    {
-                        "$set": {
-                            "login_status": "connected",
-                            "last_error": "",
-                            "updated_at": datetime.datetime.utcnow(),
-                        }
-                    },
-                    upsert=True,
-                )
-                print(f"AliceBlue automatic login completed for {user}")
-                return dict(
-                    self.apis_collection.find_one(
-                        {'user': user, 'broker': 'aliceblue'}
-                    )
-                    or {}
-                )
-            except AliceBlueDirectAuthError as e:
-                error_message = str(e)
-            except Exception as e:
-                error_message = (
-                    "AliceBlue automatic login failed: "
-                    f"{type(e).__name__}"
-                )
+        error_message = (
+            "AliceBlue session refresh requires broker reconnect. "
+            "Password/TOTP automatic login is disabled."
+        )
 
         self.db["broker_health"].update_one(
             {"user": user, "broker": "aliceblue"},
@@ -1491,6 +1421,7 @@ class Exchange:
                 "$set": {
                     "login_status": "rejected",
                     "websocket_status": "disconnected",
+                    "token_status": "reconnect_required",
                     "last_error": error_message,
                     "updated_at": datetime.datetime.utcnow(),
                 }
@@ -1498,7 +1429,7 @@ class Exchange:
             upsert=True,
         )
         if not self._should_suppress_aliceblue_login_warning(user):
-            print(f"AliceBlue automatic login rejected for {user}: {error_message}")
+            print(f"AliceBlue reconnect required for {user}: {error_message}")
         return None
 
     def _login_aliceblue(self, item):
@@ -1508,7 +1439,9 @@ class Exchange:
             for attempt in range(2):
                 user_id = str(item.get('apikey', '')).strip()
                 auth_code = str(item.get('auth_code', '')).strip()
-                secret_key = str(item.get('apisecret', '')).strip()
+                secret_key = str(
+                    item.get('apisecret') or AppConfig.ALICEBLUE_APP_SECRET or ''
+                ).strip()
                 existing_session = self._aliceblue_saved_session(item)
                 has_session = bool(str(existing_session or '').strip())
 
@@ -1579,6 +1512,8 @@ class Exchange:
                                 'user_session': encrypted_session,
                                 'sessionID': encrypted_session,
                                 'session_date': str(datetime.datetime.now().date()),
+                                'token_status': 'connected',
+                                'last_verified_at': datetime.datetime.utcnow(),
                             }
                         },
                         upsert=True,
@@ -1611,6 +1546,7 @@ class Exchange:
                         "$set": {
                             "login_status": "rejected",
                             "websocket_status": "disconnected",
+                            "token_status": "reconnect_required",
                             "last_error": error_message,
                             "updated_at": datetime.datetime.utcnow(),
                         }
@@ -9925,23 +9861,17 @@ class Exchange:
                     '401' in str(first_error)
                     or 'unauthorized' in str(first_error).lower()
                 )
-                if not unauthorized or not self._refresh_aliceblue_session(
-                    user, force=True
-                ):
+                if unauthorized:
+                    self._mark_aliceblue_reconnect_required(
+                        user,
+                        {"message": str(first_error)},
+                        audit_event="aliceblue_reconnect_required",
+                    )
+                if not unauthorized:
                     raise
-                alice = getattr(self, 'alice', {}).get(user)
-                if not alice:
-                    raise RuntimeError(
-                        f"AliceBlue session refresh did not create a client for {user}"
-                    ) from first_error
-                alice.start_websocket(
-                    socket_open_callback=mark_connected,
-                    socket_close_callback=mark_disconnected,
-                    socket_error_callback=mark_error,
-                    subscription_callback=lambda message, user=user: self._event_handler_aliceblue_depth_update(user, message),
-                    run_in_background=True,
-                    market_depth=True
-                )
+                raise RuntimeError(
+                    f"AliceBlue reconnect required for {user}"
+                ) from first_error
             with self.aliceblue_depth_lock:
                 self.aliceblue_depth_started.add(user)
             self.db["broker_health"].update_one(
@@ -10234,26 +10164,24 @@ class Exchange:
             response_payload=ret,
         )
         if self._is_unauthorized_response(ret):
-            refreshed = self._refresh_aliceblue_session(user)
-            if refreshed:
-                ret = self.alice[user].place_order(**order_kwargs)
-                log_aliceblue_diagnostic(
-                    "aliceblue_legacy_order_response",
-                    user=user,
-                    symbol=symbol,
-                    exchange=exch,
-                    optiontoken=optiontoken,
-                    side=side,
-                    quantity=quantity,
-                    response_payload=ret,
-                    after_refresh=True,
-                )
+            self._mark_aliceblue_reconnect_required(
+                user,
+                ret,
+                audit_event="aliceblue_order_failed",
+            )
+            ret = {
+                'status': 'Not_ok',
+                'message': aliceblue_error_message('session_expired'),
+                'error_kind': 'session_expired',
+                'raw': ret,
+            }
         if self._broker_order_ok(ret):
             self._remember_recent_broker_order(
                 user, symbol, side,
                 broker_order_id=self._extract_broker_order_id(ret),
                 status='submitted'
             )
+        self._audit_aliceblue_order_result(user, ret, symbol, side, quantity)
         return ret
 
     def _is_unauthorized_response(self, ret):
@@ -10261,6 +10189,72 @@ class Exchange:
             return False
         text = ' '.join(str(value).lower() for value in ret.values() if value is not None)
         return '401' in text or 'unauthorized' in text
+
+    def _mark_aliceblue_reconnect_required(self, user, error, audit_event='aliceblue_session_expired'):
+        kind = classify_aliceblue_error(error)
+        message = aliceblue_error_message(kind)
+        payload = {
+            "last_error": message,
+            "updated_at": datetime.datetime.utcnow(),
+        }
+        if kind == "session_expired":
+            payload.update({
+                "login_status": "rejected",
+                "websocket_status": "disconnected",
+                "token_status": "reconnect_required",
+            })
+            self.apis_collection.update_one(
+                {"user": user, "broker": "aliceblue"},
+                {
+                    "$set": {
+                        "token_status": "reconnect_required",
+                        "last_verified_at": datetime.datetime.utcnow(),
+                    }
+                },
+            )
+        self.db["broker_health"].update_one(
+            {"user": user, "broker": "aliceblue"},
+            {"$set": payload},
+            upsert=True,
+        )
+        try:
+            self.db["audit_logs"].insert_one({
+                "event": audit_event,
+                "user": user,
+                "actor": user,
+                "resource_type": "broker_api",
+                "resource_id": "aliceblue",
+                "status": "failure",
+                "details": {
+                    "error_kind": kind,
+                    "message": message,
+                },
+                "created_at": datetime.datetime.now(datetime.UTC),
+            })
+        except Exception:
+            pass
+
+    def _audit_aliceblue_order_result(self, user, ret, symbol, side, quantity):
+        success = self._broker_order_ok(ret)
+        try:
+            self.db["audit_logs"].insert_one({
+                "event": "aliceblue_order_placed" if success else "aliceblue_order_failed",
+                "user": user,
+                "actor": user,
+                "resource_type": "broker_order",
+                "resource_id": self._extract_broker_order_id(ret) or "",
+                "status": "success" if success else "failure",
+                "details": {
+                    "broker": "aliceblue",
+                    "symbol": symbol,
+                    "side": side,
+                    "quantity": quantity,
+                    "error_kind": classify_aliceblue_error(ret) if not success else "",
+                },
+                "created_at": datetime.datetime.now(datetime.UTC),
+            })
+        except Exception:
+            pass
 
     def _extract_broker_order_id(self, ret):
         if not isinstance(ret, dict):
@@ -10342,51 +10336,19 @@ class Exchange:
         if not item:
             print(f"AliceBlue relogin skipped for {user}: no aliceblue API row")
             return False
-
-        refreshed_item = self._refresh_aliceblue_auth(dict(item))
-        if not refreshed_item and force:
-            self.db["broker_health"].update_one(
-                {"user": user, "broker": "aliceblue"},
-                {
-                    "$set": {
-                        "login_status": "rejected",
-                        "websocket_status": "disconnected",
-                        "last_error": (
-                            "AliceBlue saved session was unauthorized and "
-                            "automatic session refresh failed"
-                        ),
-                        "updated_at": datetime.datetime.utcnow(),
-                    }
-                },
-                upsert=True,
-            )
-            print(
-                f"AliceBlue forced relogin failed for {user}: "
-                "automatic auth refresh did not produce a new session"
-            )
-            return False
-        refreshed_item = refreshed_item or self.apis_collection.find_one(
-            {'user': user, 'broker': 'aliceblue'}
+        self._mark_aliceblue_reconnect_required(
+            user,
+            {"message": "session expired"},
+            audit_event="aliceblue_reconnect_required",
         )
-        if not refreshed_item:
-            print(f"AliceBlue relogin failed for {user}: auth refresh returned no data")
-            return False
-
-        user_id, alice_instance, session_id = self._login_aliceblue(dict(refreshed_item))
-        if alice_instance and isinstance(session_id, dict) and 'sessionID' in session_id:
-            self.alice[user_id] = alice_instance
-            if user_id not in self.userloggedin:
-                self.userloggedin.append(user_id)
-            if user_id in self.usernotloggedin:
-                self.usernotloggedin.remove(user_id)
-            print(f"AliceBlue relogin completed for {user_id}; retrying order")
-            return True
-
         if user not in self.usernotloggedin:
             self.usernotloggedin.append(user)
         if user in self.userloggedin:
             self.userloggedin.remove(user)
-        print(f"AliceBlue relogin failed for {user}")
+        print(
+            f"AliceBlue reconnect required for {user}: "
+            "automatic password/TOTP relogin is disabled"
+        )
         return False
 
     def _place_aliceblue_market_order(
@@ -10459,26 +10421,24 @@ class Exchange:
             order_tag=order_tag,
         )
         if self._is_unauthorized_response(ret):
-            refreshed = self._refresh_aliceblue_session(user)
-            if refreshed:
-                ret = self.alice[user].square_off_position(
-                    transaction_type=transaction_type,
-                    quantity=quantity,
-                    product_type=product_type,
-                    exchange=exch,
-                    instrument_id=optiontoken,
-                    symbol=symbol,
-                    order_type=OrderType.Market,
-                    price=None,
-                    trigger_price=None,
-                    order_tag=order_tag,
-                )
+            self._mark_aliceblue_reconnect_required(
+                user,
+                ret,
+                audit_event="aliceblue_order_failed",
+            )
+            ret = {
+                'status': 'Not_ok',
+                'message': aliceblue_error_message('session_expired'),
+                'error_kind': 'session_expired',
+                'raw': ret,
+            }
         if self._broker_order_ok(ret):
             self._remember_recent_broker_order(
                 user, symbol, side,
                 broker_order_id=self._extract_broker_order_id(ret),
                 status='submitted'
             )
+        self._audit_aliceblue_order_result(user, ret, symbol, side, quantity)
         return ret
 
     def _json_safe(self, value):

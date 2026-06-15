@@ -51,7 +51,14 @@ class BrokerHealthService:
         row = dict(row)
         if "_id" in row:
             row["_id"] = str(row["_id"])
-        for key in ("updated_at", "token_expires_at", "last_quote_time", "last_test_at"):
+        for key in (
+            "updated_at",
+            "token_expires_at",
+            "last_quote_time",
+            "last_test_at",
+            "connected_at",
+            "last_verified_at",
+        ):
             if hasattr(row.get(key), "isoformat"):
                 row[key] = row[key].isoformat()
         return row
@@ -168,6 +175,9 @@ class BrokerHealthService:
                 "login_status": row.get("login_status") or ("missing_credentials" if missing else "not_tested"),
                 "websocket_status": row.get("websocket_status") or ("missing_credentials" if missing else "not_tested"),
                 "token_expires_at": row.get("token_expires_at"),
+                "token_status": row.get("token_status"),
+                "connected_at": row.get("connected_at"),
+                "last_verified_at": row.get("last_verified_at"),
                 "last_quote_time": row.get("last_quote_time"),
                 "last_test_at": row.get("last_test_at"),
                 "last_order_result": row.get("last_order_result"),

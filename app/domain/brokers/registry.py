@@ -33,12 +33,6 @@ BROKER_REQUIREMENTS = {
         {'id': 'api_key', 'label': 'API Key', 'type': 'text'},
     ],
     'aliceblue': [
-        {'id': 'apikey', 'label': 'AliceBlue User ID', 'type': 'text'},
-        {'id': 'alice_password', 'label': 'Password', 'type': 'password', 'toggle_function': 'toggleAlicePassword'},
-        {'id': 'app_key', 'label': 'App Key', 'type': 'text'},
-        {'id': 'auth_code', 'label': 'Auth Code', 'type': 'text'},
-        {'id': 'apisecret', 'label': 'API Secret / Secret Key', 'type': 'text'},
-        {'id': 'totp_key', 'label': 'TOTP Key', 'type': 'text'},
     ],
     'shoonya': [
         {'id': 'usr', 'label': 'Shoonya ID', 'type': 'text'},
@@ -88,7 +82,7 @@ BROKER_ACTIONS = {
 
 BROKER_STATUS = {
     'paper': {'enabled': True, 'status': 'paper_only', 'notes': 'Safe simulated broker with fills, slippage, brokerage, positions, and lifecycle tracking.'},
-    'aliceblue': {'enabled': True, 'status': 'wired', 'notes': 'Login, session refresh, websocket depth, and order placement are wired.'},
+    'aliceblue': {'enabled': True, 'status': 'redirect_auth', 'notes': 'Connect through AliceBlue redirect login. Password and TOTP storage are disabled.'},
     'angelone': {'enabled': True, 'status': 'wired', 'notes': 'Login and order placement branches exist; needs broker smoke testing.'},
     'dhan': {'enabled': True, 'status': 'wired', 'notes': 'Access-token login and order placement branches exist; needs response handling hardening.'},
     'fyers': {'enabled': True, 'status': 'wired', 'notes': 'Login, token refresh, and order placement branches exist.'},

@@ -1,6 +1,9 @@
 import bcrypt
+import datetime
+import secrets
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import RedirectResponse
 
 from app.api.fastapi_auth import (
     create_compatible_access_token,
@@ -22,10 +25,18 @@ from app.api.fastapi_schemas import (
     RegisterRequest,
 )
 from app.api.fastapi_services import FastAPITradingServices, get_trading_services
+from app.core.config import AppConfig
 from app.core.database import get_database
-from app.core.secrets import decrypt_secret, encrypt_secret_fields
+from app.core.secrets import decrypt_secret, encrypt_secret, encrypt_secret_fields
 from app.domain.audit.service import AuditLogService
 from app.domain.brokers.adapters import BrokerCredentials, BrokerOrder
+from app.domain.brokers.aliceblue_auth import (
+    AliceBlueAuthError,
+    AliceBlueSessionExchangeError,
+    build_aliceblue_connect_url,
+    exchange_auth_code_for_session,
+    parse_aliceblue_callback,
+)
 from app.domain.brokers.health import SECRET_FIELD_NAMES
 from app.domain.brokers.registry import broker_lookup_ids, broker_payload, normalize_broker_id
 from app.domain.reconciliation.service import BrokerReconciliationService
@@ -41,6 +52,17 @@ backtest_router = APIRouter(prefix="/api/backtests", tags=["backtests"])
 legacy_router = APIRouter(tags=["legacy aliases"])
 ws_router = APIRouter(tags=["websocket"])
 dashboard_connections = DashboardConnectionManager()
+ALICEBLUE_FORBIDDEN_SECRET_FIELDS = {
+    "alice_password",
+    "password",
+    "pwd",
+    "totp_key",
+    "totp_secret",
+    "apisecret",
+    "api_secret",
+    "secret_key",
+    "app_secret",
+}
 
 
 def username(user):
@@ -54,6 +76,28 @@ def clean_mongo_document(doc):
     if "_id" in doc:
         doc["_id"] = str(doc["_id"])
     return doc
+
+
+def _broker_frontend_redirect(status_value, message="", broker="aliceblue"):
+    base = AppConfig.FRONTEND_BROKER_CALLBACK_URL
+    separator = "&" if "?" in base else "?"
+    from urllib.parse import urlencode
+
+    query = urlencode(
+        {
+            "broker": broker,
+            "status": status_value,
+            "message": message[:180] if message else "",
+        }
+    )
+    return RedirectResponse(f"{base}{separator}{query}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+def _aliceblue_callback_url(request):
+    configured = str(AppConfig.ALICEBLUE_CALLBACK_URL or "").strip()
+    if configured:
+        return configured
+    return str(request.url_for("aliceblue_callback"))
 
 
 @auth_router.post("/login", response_model=ApiResponse)
@@ -131,6 +175,207 @@ def broker_status(
     return ApiResponse(success=True, message="Broker status fetched", data=data)
 
 
+@broker_router.get("/aliceblue/connect-url", response_model=ApiResponse)
+def aliceblue_connect_url(
+    request: Request,
+    user=Depends(get_current_user),
+):
+    db = get_database()
+    app_code = str(AppConfig.ALICEBLUE_APP_CODE or "").strip()
+    if not app_code:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AliceBlue app code is not configured",
+        )
+    state = secrets.token_urlsafe(32)
+    now = datetime.datetime.utcnow()
+    expires_at = now + datetime.timedelta(minutes=15)
+    db["broker_oauth_states"].create_index("expires_at", expireAfterSeconds=0)
+    db["broker_oauth_states"].create_index([("state", 1)], unique=True)
+    db["broker_oauth_states"].insert_one(
+        {
+            "state": state,
+            "user": username(user),
+            "broker": "aliceblue",
+            "created_at": now,
+            "expires_at": expires_at,
+            "used": False,
+        }
+    )
+    callback_url = _aliceblue_callback_url(request)
+    try:
+        login_url = build_aliceblue_connect_url(app_code, callback_url, state)
+    except AliceBlueAuthError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    AuditLogService(db).record(
+        "aliceblue_connect_url_created",
+        user=username(user),
+        resource_type="broker_api",
+        resource_id="aliceblue",
+        details={"callback_url": callback_url},
+    )
+    return ApiResponse(
+        success=True,
+        message="AliceBlue connect URL generated",
+        data={
+            "broker": "aliceblue",
+            "login_url": login_url,
+            "callback_url": callback_url,
+            "expires_at": expires_at.isoformat(),
+        },
+    )
+
+
+@broker_router.api_route("/aliceblue/callback", methods=["GET", "POST"], name="aliceblue_callback")
+async def aliceblue_callback(request: Request):
+    db = get_database()
+    payload = dict(request.query_params)
+    if request.method == "POST":
+        content_type = request.headers.get("content-type", "")
+        try:
+            if "application/json" in content_type:
+                body = await request.json()
+                payload.update(dict(body or {}))
+            else:
+                form = await request.form()
+                payload.update(dict(form))
+        except Exception:
+            pass
+
+    parsed = parse_aliceblue_callback(payload)
+    state_value = parsed["state"]
+    now = datetime.datetime.utcnow()
+    state_doc = db["broker_oauth_states"].find_one(
+        {
+            "state": state_value,
+            "broker": "aliceblue",
+            "used": False,
+            "expires_at": {"$gte": now},
+        }
+    )
+    if not state_doc:
+        AuditLogService(db).record(
+            "aliceblue_connect_failed",
+            resource_type="broker_api",
+            resource_id="aliceblue",
+            status="failure",
+            details={"reason": "invalid_or_expired_state"},
+        )
+        return _broker_frontend_redirect("failed", "AliceBlue callback state expired")
+
+    user_name = state_doc["user"]
+    db["broker_oauth_states"].update_one(
+        {"_id": state_doc["_id"]},
+        {"$set": {"used": True, "used_at": now}},
+    )
+    app_secret = str(AppConfig.ALICEBLUE_APP_SECRET or "").strip()
+    app_code = str(AppConfig.ALICEBLUE_APP_CODE or "").strip()
+    try:
+        session = exchange_auth_code_for_session(
+            parsed["user_id"],
+            parsed["auth_code"],
+            app_secret,
+        )
+    except AliceBlueSessionExchangeError as exc:
+        db["apis"].update_one(
+            {"user": user_name, "broker": "aliceblue"},
+            {
+                "$set": {
+                    "user": user_name,
+                    "broker": "aliceblue",
+                    "token_status": "reconnect_required",
+                    "last_verified_at": now,
+                }
+            },
+            upsert=True,
+        )
+        db["broker_health"].update_one(
+            {"user": user_name, "broker": "aliceblue"},
+            {
+                "$set": {
+                    "login_status": "rejected",
+                    "websocket_status": "disconnected",
+                    "last_error": str(exc),
+                    "updated_at": now,
+                },
+                "$setOnInsert": {"user": user_name, "broker": "aliceblue", "created_at": now},
+            },
+            upsert=True,
+        )
+        AuditLogService(db).record(
+            "aliceblue_connect_failed",
+            user=user_name,
+            resource_type="broker_api",
+            resource_id="aliceblue",
+            status="failure",
+            details={"reason": str(exc), "alice_client_id": parsed["user_id"]},
+        )
+        return _broker_frontend_redirect("failed", str(exc))
+
+    encrypted_session = encrypt_secret(session["session_id"])
+    fields = {
+        "user": user_name,
+        "broker": "aliceblue",
+        "apikey": session["user_id"],
+        "alice_client_id": session["user_id"],
+        "app_key": app_code,
+        "app_code": app_code,
+        "auth_code": encrypt_secret(session["auth_code"]),
+        "user_session": encrypted_session,
+        "sessionID": encrypted_session,
+        "token_status": "connected",
+        "connected_at": now,
+        "last_verified_at": now,
+    }
+    db["apis"].update_one(
+        {"user": user_name, "broker": "aliceblue"},
+        {
+            "$set": fields,
+            "$unset": {
+                "alice_password": "",
+                "password": "",
+                "pwd": "",
+                "totp_key": "",
+                "totp_secret": "",
+                "apisecret": "",
+                "api_secret": "",
+                "secret_key": "",
+                "app_secret": "",
+            },
+        },
+        upsert=True,
+    )
+    db["broker"].update_one(
+        {"user": user_name},
+        {"$set": {"user": user_name, "selectedbroker": "aliceblue"}},
+        upsert=True,
+    )
+    db["broker_health"].update_one(
+        {"user": user_name, "broker": "aliceblue"},
+        {
+            "$set": {
+                "login_status": "connected",
+                "websocket_status": "not_tested",
+                "token_status": "connected",
+                "last_error": "",
+                "connected_at": now,
+                "last_verified_at": now,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"user": user_name, "broker": "aliceblue", "created_at": now},
+        },
+        upsert=True,
+    )
+    AuditLogService(db).record(
+        "aliceblue_connected",
+        user=user_name,
+        resource_type="broker_api",
+        resource_id="aliceblue",
+        details={"alice_client_id": session["user_id"]},
+    )
+    return _broker_frontend_redirect("connected", "AliceBlue connected")
+
+
 @broker_router.post("/{broker}/test", response_model=ApiResponse)
 def test_broker_connection(
     broker: str,
@@ -173,6 +418,18 @@ def save_broker_credentials(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{broker} is not enabled for trading yet")
     db = get_database()
     values = dict(payload.values)
+    if broker == "aliceblue":
+        forbidden = sorted(
+            field for field in values.keys() if field in ALICEBLUE_FORBIDDEN_SECRET_FIELDS
+        )
+        if forbidden:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "AliceBlue password/TOTP credential storage is disabled. "
+                    "Use Connect AliceBlue redirect login."
+                ),
+            )
     existing = db["apis"].find_one({"user": username(user), "broker": broker}) or {}
     for field_name in list(values.keys()):
         if field_name in SECRET_FIELD_NAMES and not str(values.get(field_name, "")).strip() and existing.get(field_name):
@@ -236,6 +493,11 @@ def reveal_broker_credential(
 ):
     broker = normalize_broker_id(broker)
     field_name = payload.field
+    if broker == "aliceblue" and field_name in ALICEBLUE_FORBIDDEN_SECRET_FIELDS:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="AliceBlue password/TOTP reveal is disabled",
+        )
     if field_name not in SECRET_FIELD_NAMES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

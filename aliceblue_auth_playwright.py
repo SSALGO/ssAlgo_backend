@@ -256,6 +256,15 @@ def main():
     parser.add_argument("--show-secrets", action="store_true", help="Print raw credential-bearing URLs and values in local terminal output.")
     parser.add_argument("--timeout-ms", type=int, default=90000, help="Login/redirect timeout.")
     args = parser.parse_args()
+    if not args.api_only or args.alice_password or args.otp or args.totp_secret:
+        print(json.dumps({
+            "session_ok": False,
+            "error": (
+                "AliceBlue password/TOTP browser automation is disabled. "
+                "Use /api/brokers/aliceblue/connect-url and /api/brokers/aliceblue/callback."
+            ),
+        }, indent=2))
+        return 2
 
     client = pymongo.MongoClient(args.mongo_uri, serverSelectionTimeoutMS=3000)
     db = client[args.db]

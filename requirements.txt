@@ -18,6 +18,7 @@ tabulate==0.10.0
 
 # Auth / payments
 bcrypt==5.0.0
+cryptography==46.0.3
 pycryptodome==3.23.0
 PyJWT==2.13.0
 pyotp==2.9.0

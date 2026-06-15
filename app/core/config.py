@@ -52,6 +52,14 @@ class AppConfig:
     RAZORPAY_KEY_ID = os.getenv('SSLAGO_RAZORPAY_KEY_ID', '')
     RAZORPAY_KEY_SECRET = os.getenv('SSLAGO_RAZORPAY_KEY_SECRET', '')
 
+    ALICEBLUE_APP_CODE = os.getenv('SSLAGO_ALICEBLUE_APP_CODE') or os.getenv('ALICEBLUE_APP_CODE', '')
+    ALICEBLUE_APP_SECRET = os.getenv('SSLAGO_ALICEBLUE_APP_SECRET') or os.getenv('ALICEBLUE_APP_SECRET', '')
+    ALICEBLUE_CALLBACK_URL = os.getenv('SSLAGO_ALICEBLUE_CALLBACK_URL', '')
+    FRONTEND_BROKER_CALLBACK_URL = os.getenv(
+        'SSLAGO_FRONTEND_BROKER_CALLBACK_URL',
+        'http://localhost:5173/broker-setup',
+    )
+
     SHOONYA_CREDENTIALS_FILE = os.getenv('SSLAGO_SHOONYA_CREDENTIALS_FILE', '')
     SSL_CERT_FILE = os.getenv('SSLAGO_SSL_CERT_FILE', '')
     SSL_KEY_FILE = os.getenv('SSLAGO_SSL_KEY_FILE', '')

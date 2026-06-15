@@ -1,6 +1,33 @@
 from app.api.legacy_compat.common import *
 
 
+ALICEBLUE_FORBIDDEN_SECRET_FIELDS = {
+    "alice_password",
+    "password",
+    "pwd",
+    "totp_key",
+    "totp_secret",
+    "apisecret",
+    "api_secret",
+    "secret_key",
+    "app_secret",
+}
+
+
+def reject_aliceblue_password_totp(data):
+    broker = str(data.get("broker") or "").strip().lower()
+    if broker not in {"aliceblue", "alice"}:
+        return
+    if any(str(data.get(field) or "").strip() for field in ALICEBLUE_FORBIDDEN_SECRET_FIELDS):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "AliceBlue password/TOTP credential storage is disabled. "
+                "Use Connect AliceBlue redirect login."
+            ),
+        )
+
+
 def api_apis(_admin=Depends(require_admin)):
     data = [clean_document(doc, mask_secrets=True) for doc in collection("apis").find({})]
     return response("Fetched Successfully APIs", data)
@@ -33,6 +60,7 @@ async def api_add_apikey(request: Request, user=Depends(get_current_user)):
     data = flat_form(payload)
     data["user"] = current_username(user)
     data.pop("token", None)
+    reject_aliceblue_password_totp(data)
     inserted_id = collection("apis").insert_one(encrypted_secret_update(data)).inserted_id
     audit_event("broker_credentials_created", user=current_username(user), resource_type="broker_api", resource_id=inserted_id, details={"broker": data.get("broker")})
     return response("API key added successfully", {"id": str(inserted_id)})
@@ -44,6 +72,7 @@ async def api_edit_apikey(request: Request, user=Depends(get_current_user)):
     data["user"] = current_username(user)
     api_id = data.pop("id", "")
     data.pop("token", None)
+    reject_aliceblue_password_totp(data)
     query = {"_id": object_id(api_id), "user": current_username(user)} if api_id else {"user": current_username(user), "broker": data.get("broker")}
     result = collection("apis").update_one(query, {"$set": encrypted_secret_update(data)}, upsert=not api_id)
     if api_id and result.matched_count == 0:
@@ -73,6 +102,7 @@ async def api_multi_api(request: Request, user=Depends(get_current_user)):
         data["user"] = current_username(user)
         data.pop("token", None)
         data.pop("operation", None)
+        reject_aliceblue_password_totp(data)
         result = collection("apis").update_one(query, {"$set": encrypted_secret_update(data)}, upsert=True)
         message = "Successfully Created API" if result.upserted_id else "Successfully Updated API"
         audit_event("broker_credentials_updated", user=current_username(user), resource_type="broker_api", resource_id=result.upserted_id or broker, details={"broker": broker, "operation": operation})

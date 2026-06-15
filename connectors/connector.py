@@ -2838,6 +2838,8 @@ class Exchange:
                 self.SSTRIKE(trade)
             elif trade['strategy']=='FRACTALNUBIATIMEHEDGEORDER':
                 self.FRACTALNUBIATIMEHEDGEORDER(trade)
+            elif trade['strategy'] == 'MCXSTRATEGY':
+                self.MCXSTRATEGY(trade)
         except Exception as exc:
             self._log_strategy_exception(trade, exc)
             raise
@@ -3137,6 +3139,294 @@ class Exchange:
                 else 'entry_condition_false'
             ),
         }
+
+    def _mcx_resampled_candles(self, symbol, timeframe):
+        candle_data = self._market_dataframe(symbol)
+        if not isinstance(candle_data, pd.DataFrame) or candle_data.empty or 'time' not in candle_data.columns:
+            return pd.DataFrame()
+        df = candle_data.copy()
+        df['date'] = pd.to_datetime(df['time'], format='%d-%m-%Y %H:%M:%S', errors='coerce')
+        df = df.dropna(subset=['date'])
+        if df.empty:
+            return pd.DataFrame()
+        df['dates'] = df['date'].dt.date
+        df['weekday'] = df['date'].dt.weekday
+        df = df[df['weekday'] < 5].set_index('date').sort_index()
+        df = df.between_time('8:59', '23:55')
+        if df.empty:
+            return pd.DataFrame()
+        minutes = int(self.timeswitch.get(timeframe, 5))
+        rows = []
+        for _date, group in df.groupby('dates'):
+            resampled = group.resample(f'{minutes}min', origin='start').agg({
+                'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+            }).dropna(subset=['open', 'high', 'low', 'close'])
+            resampled.reset_index(inplace=True)
+            rows.append(resampled)
+        if not rows:
+            return pd.DataFrame()
+        candles = pd.concat(rows, ignore_index=True)
+        if candles.empty:
+            return candles
+        last_complete_time = candles['date'].iloc[-1] + pd.to_timedelta(minutes - 1, 'minutes')
+        if last_complete_time > df.index[-1] and len(candles) > 1:
+            candles = candles.iloc[:-1]
+        return candles
+
+    def _mcx_atr(self, candles, period):
+        high = candles['high'].astype(float)
+        low = candles['low'].astype(float)
+        close = candles['close'].astype(float)
+        prev_close = close.shift(1)
+        true_range = pd.concat([
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        return true_range.rolling(int(period)).mean()
+
+    def _mcx_adx(self, candles, period=14):
+        high = candles['high'].astype(float)
+        low = candles['low'].astype(float)
+        plus_dm = high.diff()
+        minus_dm = -low.diff()
+        plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+        minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+        atr = self._mcx_atr(candles, period)
+        plus_di = 100 * plus_dm.rolling(period).sum() / atr
+        minus_di = 100 * minus_dm.rolling(period).sum() / atr
+        dx = ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)) * 100
+        return dx.rolling(period).mean()
+
+    def _mcx_future_contract(self, symbol, expiry='Current Month'):
+        rows = self.Mcx[
+            (self.Mcx['Symbol'] == symbol)
+            & (self.Mcx['Expiry_'].dt.date >= datetime.date.today())
+            & (self.Mcx['OptionType'] == 'XX')
+        ].sort_values(by='Expiry_')
+        if rows.empty:
+            raise RuntimeError(f"MCX future contract unavailable for {symbol}")
+        index = 1 if 'Next Month' in str(expiry) and len(rows) > 1 else 0
+        row = rows.iloc[index]
+        self.add_symbol_to_websocket(row['TradingSymbol'])
+        expiry_value = row['Expiry_'].date() if hasattr(row['Expiry_'], 'date') else row['Expiry_']
+        return str(row['TradingSymbol']), int(row['LotSize']), expiry_value, int(row['Token'])
+
+    def _mcx_today_trade_count(self, trade):
+        start = int(datetime.datetime.combine(datetime.date.today(), datetime.time.min).timestamp())
+        return self.opositions_collection.count_documents({
+            'botcode': trade['botcode'],
+            'user': trade['user'],
+            'time': {'$gte': start},
+        })
+
+    def _evaluate_mcx_signal(self, trade, candles):
+        if candles.empty:
+            return 0, 'market_data_unavailable', {}
+        strategy_type = str(trade.get('mcx_strategy_type') or 'OPENING_RANGE_BREAKOUT').upper()
+        atr_period = int(trade.get('atr_period', 14) or 14)
+        if len(candles) < max(atr_period + 5, 25):
+            return 0, 'insufficient_candles', {'candle_count': len(candles)}
+
+        candles = candles.copy()
+        candles['atr'] = self._mcx_atr(candles, atr_period)
+        candles['adx'] = self._mcx_adx(candles, atr_period)
+        latest = candles.iloc[-1]
+        previous = candles.iloc[-2]
+        atr = float(latest.get('atr') or 0)
+        if atr <= 0:
+            return 0, 'atr_unavailable', {'candle_count': len(candles)}
+
+        signal = 0
+        reason = 'entry_condition_false'
+        details = {'close': float(latest['close']), 'atr': atr, 'strategy_type': strategy_type}
+        if strategy_type == 'OPENING_RANGE_BREAKOUT':
+            start_time = datetime.datetime.strptime(trade['StartTime'], '%H:%M').time()
+            range_minutes = int(trade.get('range_minutes', 30) or 30)
+            session_date = latest['date'].date()
+            range_end = datetime.datetime.combine(session_date, start_time) + datetime.timedelta(minutes=range_minutes)
+            day_candles = candles[candles['date'].dt.date == session_date]
+            range_candles = day_candles[(day_candles['date'].dt.time >= start_time) & (day_candles['date'] < range_end)]
+            if latest['date'] < range_end:
+                return 0, 'opening_range_building', {'range_end': range_end.isoformat()}
+            if range_candles.empty:
+                return 0, 'opening_range_unavailable', {}
+            range_high = float(range_candles['high'].max())
+            range_low = float(range_candles['low'].min())
+            candle_range = float(latest['high'] - latest['low'])
+            min_range = float(trade.get('breakout_atr_multiple', 0.8) or 0.8) * atr
+            details.update({'range_high': range_high, 'range_low': range_low, 'candle_range': candle_range})
+            if latest['close'] > range_high and candle_range >= min_range:
+                signal, reason = 1, 'opening_range_breakout_buy'
+            elif latest['close'] < range_low and candle_range >= min_range:
+                signal, reason = -1, 'opening_range_breakout_sell'
+        elif strategy_type == 'VOLATILITY_EXPANSION':
+            lookback = 20
+            high_break = float(candles['high'].iloc[-lookback - 1:-1].max())
+            low_break = float(candles['low'].iloc[-lookback - 1:-1].min())
+            volume_ok = True
+            if 'volume' in candles.columns:
+                volume_ok = float(latest.get('volume') or 0) >= float(candles['volume'].rolling(20).mean().iloc[-1] or 0)
+            details.update({'donchian_high': high_break, 'donchian_low': low_break, 'volume_ok': volume_ok})
+            if volume_ok and latest['close'] > high_break:
+                signal, reason = 1, 'volatility_expansion_buy'
+            elif volume_ok and latest['close'] < low_break:
+                signal, reason = -1, 'volatility_expansion_sell'
+        elif strategy_type == 'TREND_PULLBACK':
+            fast = int(trade.get('ema_fast', 20) or 20)
+            slow = int(trade.get('ema_slow', 50) or 50)
+            adx_min = float(trade.get('adx_min', 22) or 22)
+            candles['ema_fast'] = candles['close'].ewm(span=fast, adjust=False).mean()
+            candles['ema_slow'] = candles['close'].ewm(span=slow, adjust=False).mean()
+            latest_fast = float(candles['ema_fast'].iloc[-1])
+            latest_slow = float(candles['ema_slow'].iloc[-1])
+            previous_fast = float(candles['ema_fast'].iloc[-2])
+            adx = float(latest.get('adx') or 0)
+            details.update({'ema_fast': latest_fast, 'ema_slow': latest_slow, 'adx': adx})
+            if adx < adx_min:
+                reason = 'adx_below_threshold'
+            elif latest_fast > latest_slow and previous['low'] <= previous_fast and latest['close'] > latest_fast:
+                signal, reason = 1, 'trend_pullback_buy'
+            elif latest_fast < latest_slow and previous['high'] >= previous_fast and latest['close'] < latest_fast:
+                signal, reason = -1, 'trend_pullback_sell'
+
+        trade_side = str(trade.get('trade_side') or 'BOTH').upper()
+        if trade_side == 'BUYER' and signal == -1:
+            return 0, 'sell_signal_blocked_by_trade_side', details
+        if trade_side == 'SELLER' and signal == 1:
+            return 0, 'buy_signal_blocked_by_trade_side', details
+        return signal, reason, details
+
+    def _place_mcx_live_order(self, trade, side, future_symbol, lot_size, token, order_tag='mcx_order'):
+        broker_info = self.broker_collection.find_one({'user': trade['user']}) or {}
+        broker = broker_info.get('selectedbroker')
+        if broker != 'aliceblue':
+            raise RuntimeError(f"MCX live order currently supports aliceblue only, selected={broker}")
+        if trade['user'] not in self.alice:
+            raise RuntimeError(f"AliceBlue session missing for {trade['user']}")
+        is_open, reason = self._is_exchange_open_for_live_order('MCX')
+        if not is_open:
+            raise RuntimeError(reason)
+        transaction_type = TransactionType.Buy if side == 'BUY' else TransactionType.Sell
+        product = ProductType.Intraday if str(trade.get('product_type') or 'MIS').upper() == 'MIS' else ProductType.Normal
+        quantity = int(lot_size) * int(trade.get('lot', 1) or 1)
+        instrument = self._make_instrument('MCX', token, trade['symbol'], future_symbol, lot_size)
+        ret = self._place_aliceblue_limit_order(
+            user=trade['user'],
+            transaction_type=transaction_type,
+            instrument=instrument,
+            quantity=quantity,
+            product_type=product,
+            symbol=future_symbol,
+            exch='MCX',
+            optiontoken=token,
+            order_tag=order_tag,
+        )
+        if not self._broker_order_response_ok(broker, ret):
+            raise RuntimeError(f"AliceBlue MCX order rejected: {ret}")
+        return ret
+
+    def _create_mcx_position(self, trade, side, price, future_symbol, lot_size, token, signal_reason, sl_price, tp_price, live_response=None):
+        lots = int(trade.get('lot', 1) or 1)
+        position = {
+            'user': str(trade['user']), 'botname': trade['botname'], 'time': int(datetime.datetime.now().timestamp()),
+            'symbol': trade['symbol'], 'entry_price': float(price), 'side': side, 'status': 'open', 'pnl': 0,
+            'lot': lots, 'initial_lot': lots, 'optionentry': float(price), 'optionexit': float(price),
+            'optionlot': int(lot_size), 'optionexpiry': str(trade.get('Expiry') or 'Current Month'), 'optionname': future_symbol,
+            'pnlhalf': 0, 'decision': 'intrade', 'BSmode': side == 'BUY', 'entrycond': signal_reason, 'exitcond': '',
+            'entry_id': self._next_entry_id(), 'live': bool(trade.get('live')), 'exch': 'MCX', 'current_price': float(price),
+            'botcode': trade['botcode'], 'optiontoken': int(token), 'trail_stoploss': 0, 'sl_price': float(sl_price),
+            'tp_price': float(tp_price), 'exittime': int(datetime.datetime.now().timestamp()),
+            'broker_response': self._json_safe(live_response) if live_response else None,
+        }
+        self.opositions_collection.insert_one(position)
+        self.strategy_collection.update_one(
+            {'botcode': trade['botcode'], 'user': trade['user']},
+            {'$set': {'position': 'in', 'mcx_last_entry_reason': signal_reason}},
+        )
+        trade['position'] = 'in'
+
+    def _manage_mcx_exit(self, trade, future_symbol, lot_size, token):
+        positions = list(self.opositions_collection.find({'botcode': trade['botcode'], 'user': trade['user'], 'status': 'open'}))
+        if not positions:
+            return
+        try:
+            price = float(self._get_market_price(future_symbol, 'MCX', token))
+        except Exception:
+            return
+        now_time = india_market_now().time().replace(tzinfo=None)
+        exit_time = datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()
+        for position in positions:
+            side = position.get('side')
+            qty = int(position.get('optionlot', lot_size)) * int(position.get('lot', 1))
+            pnl = (price - float(position['entry_price'])) * qty
+            if side == 'SELL':
+                pnl = -pnl
+            exit_reason = None
+            if side == 'BUY' and price <= float(position.get('sl_price') or 0):
+                exit_reason = 'MCX SL'
+            elif side == 'BUY' and price >= float(position.get('tp_price') or 0):
+                exit_reason = 'MCX TP'
+            elif side == 'SELL' and price >= float(position.get('sl_price') or 0):
+                exit_reason = 'MCX SL'
+            elif side == 'SELL' and price <= float(position.get('tp_price') or 0):
+                exit_reason = 'MCX TP'
+            if now_time >= exit_time:
+                exit_reason = 'MCX Intraday Exit'
+            if position.get('decision') == 'exitit':
+                exit_reason = 'User Exit'
+            update = {'current_price': float(price), 'optionexit': float(price), 'pnl': float(pnl), 'exittime': int(datetime.datetime.now().timestamp())}
+            if exit_reason:
+                if trade.get('live'):
+                    self._place_mcx_live_order(trade, 'SELL' if side == 'BUY' else 'BUY', future_symbol, lot_size, token, order_tag='mcx_exit')
+                update.update({'status': 'close', 'decision': 'exit', 'exit_reason': exit_reason})
+                self.opositions_collection.update_one({'_id': position['_id']}, {'$set': update})
+                self.strategy_collection.update_one({'botcode': trade['botcode'], 'user': trade['user']}, {'$set': {'position': 'out'}})
+            else:
+                self.opositions_collection.update_one({'_id': position['_id']}, {'$set': update})
+
+    def MCXSTRATEGY(self, trade):
+        if not (self.testmode or not trade.get('live') or trade.get('user') in self.userloggedin):
+            self._log_decision_on_change('mcx_signal_rejected', trade, 'broker_not_logged_in', {
+                'user': trade.get('user'), 'strategy_id': trade.get('botcode'), 'symbol': trade.get('symbol'), 'reason': 'broker_not_logged_in'
+            })
+            return
+        if datetime.date.today().weekday() >= self.marketdays or (trade.get('status') != 'opened' and trade.get('position') != 'in'):
+            return
+        symbol = str(trade.get('symbol') or '').upper()
+        future_symbol, lot_size, _expiry, token = self._mcx_future_contract(symbol, trade.get('Expiry', 'Current Month'))
+        self._manage_mcx_exit(trade, future_symbol, lot_size, token)
+        if trade.get('position') == 'in':
+            return
+        if not strategy_market_window(trade, marketdays=self.marketdays):
+            self._log_decision_on_change('mcx_signal_rejected', trade, 'outside_strategy_window', {
+                'user': trade.get('user'), 'strategy_id': trade.get('botcode'), 'symbol': symbol,
+                'reason': 'outside_strategy_window', 'start_time': trade.get('StartTime'), 'exit_time': trade.get('ExitTime')
+            })
+            return
+        max_trades = int(trade.get('max_trades_per_day', 2) or 2)
+        if self._mcx_today_trade_count(trade) >= max_trades:
+            self._log_decision_on_change('mcx_signal_rejected', trade, 'max_trades_reached', {
+                'user': trade.get('user'), 'strategy_id': trade.get('botcode'), 'symbol': symbol,
+                'reason': 'max_trades_reached', 'max_trades': max_trades
+            })
+            return
+        candles = self._mcx_resampled_candles(symbol, trade.get('timeframe', '5m'))
+        signal, reason, details = self._evaluate_mcx_signal(trade, candles)
+        trading_event('mcx_signal_evaluation', user=trade.get('user'), strategy_id=trade.get('botcode'), symbol=symbol, signal=signal, reason=reason, **details)
+        if signal == 0:
+            return
+        latest = candles.iloc[-1]
+        price = float(latest['close'])
+        atr = float(details.get('atr') or self._mcx_atr(candles, int(trade.get('atr_period', 14))).iloc[-1])
+        stop_distance = float(trade.get('stop_atr_multiple', 1.2) or 1.2) * atr
+        target_distance = stop_distance * float(trade.get('target_r_multiple', 1.8) or 1.8)
+        side = 'BUY' if signal == 1 else 'SELL'
+        sl_price = price - stop_distance if side == 'BUY' else price + stop_distance
+        tp_price = price + target_distance if side == 'BUY' else price - target_distance
+        live_response = self._place_mcx_live_order(trade, side, future_symbol, lot_size, token, order_tag='mcx_entry') if trade.get('live') else None
+        self._create_mcx_position(trade, side, price, future_symbol, lot_size, token, reason, sl_price, tp_price, live_response=live_response)
+        trading_event('mcx_order_created', user=trade.get('user'), strategy_id=trade.get('botcode'), symbol=symbol, future_symbol=future_symbol, side=side, live=trade.get('live'), entry_price=price, sl_price=sl_price, tp_price=tp_price, signal_reason=reason)
 
     def SSTRIKE(self,trade):
         #signal-1 for buy -1 for sell

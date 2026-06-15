@@ -18,7 +18,7 @@ from app.api.native_legacy_routes import native_legacy_router
 from app.api.ops_routes import ops_router
 from app.api.worker_routes import worker_router
 from app.core.config import AppConfig
-from app.core.database import get_database
+from app.core.database import ensure_core_indexes, get_database
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,9 @@ def verify_database_connection():
         mongo_host,
         db.name,
     )
+    created_indexes = ensure_core_indexes(db)
+    if created_indexes:
+        logger.info("API MongoDB indexes ensured: created=%s", created_indexes)
 
 
 @app.get("/health")

@@ -232,9 +232,10 @@ def encrypted_secret_update(data):
 
 def active_strategy_units(username):
     count = 0
-    for strategy in collection("strategies").find({"user": username}):
-        if strategy.get("status") not in ACTIVE_STRATEGY_STATUSES:
-            continue
+    for strategy in collection("strategies").find({
+        "user": username,
+        "status": {"$in": list(ACTIVE_STRATEGY_STATUSES)},
+    }):
         symbol = strategy.get("symbol")
         if isinstance(symbol, list):
             count += len(symbol)

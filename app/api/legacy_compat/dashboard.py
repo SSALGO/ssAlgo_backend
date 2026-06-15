@@ -1,6 +1,21 @@
+import logging
+import time
+
 from app.api.legacy_compat.common import *
 from app.domain.brokers.health import BrokerHealthService
 from app.workers.control import WorkerControlService
+
+
+logger = logging.getLogger(__name__)
+DASHBOARD_HISTORY_LIMIT = 100
+
+
+def _elapsed_ms(start):
+    return round((time.perf_counter() - start) * 1000, 2)
+
+
+def _latest_first(cursor):
+    return cursor.sort("$natural", -1).limit(DASHBOARD_HISTORY_LIMIT)
 
 
 async def api_searchsymbol(request: Request, query: str = Query("", min_length=0)):
@@ -34,12 +49,31 @@ async def api_searchsymbol(request: Request, query: str = Query("", min_length=0
 
 
 def api_index(user=Depends(get_current_user)):
+    total_start = time.perf_counter()
     db = get_database()
     username = current_username(user)
+    logger.info("api_index_start user=%s", username)
+
+    step_start = time.perf_counter()
     broker_health = BrokerHealthService(db)
     active_broker = broker_health.active_broker(username)
     active_broker_health = broker_health.get_health(username, active_broker)
+    logger.info(
+        "api_index_broker_health_ms=%s user=%s broker=%s",
+        _elapsed_ms(step_start),
+        username,
+        active_broker,
+    )
+
+    step_start = time.perf_counter()
     trading_runtime = WorkerControlService(db).get_status()
+    logger.info(
+        "api_index_trading_runtime_ms=%s user=%s",
+        _elapsed_ms(step_start),
+        username,
+    )
+
+    step_start = time.perf_counter()
     sub = db["subscriptionperiod"].find_one({"user": username})
     if not sub:
         ensure_free_subscription(username)
@@ -48,22 +82,82 @@ def api_index(user=Depends(get_current_user)):
         active_subscription = datetime.datetime.strptime(sub.get("end", "1970-01-01"), "%Y-%m-%d") + datetime.timedelta(days=1) >= datetime.datetime.now()
     except ValueError:
         active_subscription = False
+    logger.info(
+        "api_index_subscription_ms=%s user=%s",
+        _elapsed_ms(step_start),
+        username,
+    )
 
+    step_start = time.perf_counter()
     strategies = [
         clean_document(doc)
-        for doc in db["strategies"].find({"user": username})
-        if doc.get("status") in ACTIVE_STRATEGY_STATUSES
+        for doc in db["strategies"].find({
+            "user": username,
+            "status": {"$in": list(ACTIVE_STRATEGY_STATUSES)},
+        })
     ]
+    logger.info(
+        "api_index_strategies_ms=%s count=%s user=%s",
+        _elapsed_ms(step_start),
+        len(strategies),
+        username,
+    )
+
+    step_start = time.perf_counter()
     open_positions = [
         clean_document(doc)
-        for doc in db["Opositions"].find({"user": username})
-        if doc.get("decision") == "intrade" and doc.get("status") == "open"
+        for doc in db["Opositions"].find({
+            "user": username,
+            "decision": "intrade",
+            "status": "open",
+        })
     ]
+    logger.info(
+        "api_index_opositions_ms=%s count=%s user=%s",
+        _elapsed_ms(step_start),
+        len(open_positions),
+        username,
+    )
+
+    step_start = time.perf_counter()
+    orders = [
+        clean_document(doc)
+        for doc in db["orders"].find({"user": username, "status": "opened"})
+    ]
+    closed_orders = [
+        clean_document(doc)
+        for doc in _latest_first(db["orders"].find({"user": username, "status": {"$ne": "opened"}}))
+    ]
+    logger.info(
+        "api_index_orders_ms=%s open_count=%s closed_count=%s user=%s",
+        _elapsed_ms(step_start),
+        len(orders),
+        len(closed_orders),
+        username,
+    )
+
+    step_start = time.perf_counter()
+    positions = [
+        clean_document(doc)
+        for doc in db["positions"].find({"user": username, "status": "open"})
+    ]
+    closed_positions = [
+        clean_document(doc)
+        for doc in _latest_first(db["positions"].find({"user": username, "status": {"$ne": "open"}}))
+    ]
+    logger.info(
+        "api_index_positions_ms=%s open_count=%s closed_count=%s user=%s",
+        _elapsed_ms(step_start),
+        len(positions),
+        len(closed_positions),
+        username,
+    )
+
     data = {
-        "orders": [clean_document(doc) for doc in db["orders"].find({"user": username}) if doc.get("status") == "opened"],
-        "closed_orders": [clean_document(doc) for doc in db["orders"].find({"user": username}) if doc.get("status") != "opened"],
-        "positions": [clean_document(doc) for doc in db["positions"].find({"user": username}) if doc.get("status") == "open"],
-        "closed_positions": [clean_document(doc) for doc in db["positions"].find({"user": username}) if doc.get("status") != "open"],
+        "orders": orders,
+        "closed_orders": closed_orders,
+        "positions": positions,
+        "closed_positions": closed_positions,
         "user": username,
         "allstrategies": {
             "Equity SSALGO": "add_eqssalgo_form",
@@ -102,6 +196,15 @@ def api_index(user=Depends(get_current_user)):
             "SMC": "https://www.smctrade.com/login.aspx",
         },
     }
+    logger.info(
+        "api_index_response_ready_ms=%s user=%s strategies=%s opositions=%s orders=%s positions=%s",
+        _elapsed_ms(total_start),
+        username,
+        len(strategies),
+        len(open_positions),
+        len(orders),
+        len(positions),
+    )
     return response("Index data retrieved successfully", data)
 
 

@@ -164,6 +164,17 @@ def test_legacy_dashboard_uses_active_broker_health_for_connection_status(fake_d
     assert disconnected.data["broker_health"]["login_status"] == "disconnected"
 
 
+def test_legacy_dashboard_exposes_mcx_strategy_creator(fake_db, monkeypatch):
+    from app.api.legacy_compat import dashboard
+
+    fake_db["subscriptionperiod"].insert_one({"user": "alice", "end": "2099-12-31"})
+    monkeypatch.setattr(dashboard, "get_database", lambda: fake_db)
+
+    response = dashboard.api_index(user={"username": "alice", "admin": False})
+
+    assert response.data["allstrategies"]["MCX Commodity Strategy"] == "add_mcxstrategy_form"
+
+
 def test_broker_secret_reveal_is_owner_scoped_audited_and_not_cached(fake_db, monkeypatch):
     from app.api import fastapi_routers
     from app.api.fastapi_auth import get_current_user

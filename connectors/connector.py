@@ -852,6 +852,7 @@ class Exchange:
         self.aliceblue_market_depth_enabled = True
         self.aliceblue_depth_started = set()
         self.aliceblue_depth_starting = set()
+        self.aliceblue_depth_lock = threading.RLock()
         self.recent_broker_order_keys = {}
         self.broker_order_duplicate_window_seconds = 30
         self.candles1m = dict()
@@ -9541,23 +9542,90 @@ class Exchange:
     def _ensure_aliceblue_market_depth(self, user):
         if not getattr(self, 'aliceblue_market_depth_enabled', False):
             return
-        if user in self.aliceblue_depth_started:
-            return
-        if user in self.aliceblue_depth_starting:
-            return
+        with self.aliceblue_depth_lock:
+            if user in self.aliceblue_depth_started:
+                return
+            if user in self.aliceblue_depth_starting:
+                return
+            self.aliceblue_depth_starting.add(user)
         if not self._aliceblue_user_verified_today(user):
             print(f"aliceblue market depth skipped for {user}: not verified today")
+            with self.aliceblue_depth_lock:
+                self.aliceblue_depth_starting.discard(user)
             return
         alice = getattr(self, 'alice', {}).get(user)
         if not alice:
+            with self.aliceblue_depth_lock:
+                self.aliceblue_depth_starting.discard(user)
             return
-        self.aliceblue_depth_starting.add(user)
+
+        if getattr(getattr(alice, 'trade', None), 'ws', None) is not None:
+            with self.aliceblue_depth_lock:
+                self.aliceblue_depth_started.add(user)
+                self.aliceblue_depth_starting.discard(user)
+            self.db["broker_health"].update_one(
+                {"user": user, "broker": "aliceblue"},
+                {
+                    "$set": {
+                        "websocket_status": "connected",
+                        "last_error": "",
+                        "updated_at": datetime.datetime.utcnow(),
+                    }
+                },
+                upsert=True,
+            )
+            return
+
+        def mark_connected(user=user):
+            with self.aliceblue_depth_lock:
+                self.aliceblue_depth_started.add(user)
+            self.db["broker_health"].update_one(
+                {"user": user, "broker": "aliceblue"},
+                {
+                    "$set": {
+                        "websocket_status": "connected",
+                        "last_error": "",
+                        "updated_at": datetime.datetime.utcnow(),
+                    }
+                },
+                upsert=True,
+            )
+            print(f"aliceblue market depth websocket open user={user}")
+
+        def mark_disconnected(user=user):
+            with self.aliceblue_depth_lock:
+                self.aliceblue_depth_started.discard(user)
+            self.db["broker_health"].update_one(
+                {"user": user, "broker": "aliceblue"},
+                {
+                    "$set": {
+                        "websocket_status": "disconnected",
+                        "updated_at": datetime.datetime.utcnow(),
+                    }
+                },
+                upsert=True,
+            )
+            print(f"aliceblue market depth websocket closed user={user}")
+
+        def mark_error(error, user=user):
+            self.db["broker_health"].update_one(
+                {"user": user, "broker": "aliceblue"},
+                {
+                    "$set": {
+                        "last_error": f"Market depth websocket error: {error}",
+                        "updated_at": datetime.datetime.utcnow(),
+                    }
+                },
+                upsert=True,
+            )
+            print(f"aliceblue market depth websocket error user={user}: {error}")
+
         try:
             try:
                 alice.start_websocket(
-                    socket_open_callback=lambda user=user: print(f"aliceblue market depth websocket open user={user}"),
-                    socket_close_callback=lambda user=user: print(f"aliceblue market depth websocket closed user={user}"),
-                    socket_error_callback=lambda error, user=user: print(f"aliceblue market depth websocket error user={user}: {error}"),
+                    socket_open_callback=mark_connected,
+                    socket_close_callback=mark_disconnected,
+                    socket_error_callback=mark_error,
                     subscription_callback=lambda message, user=user: self._event_handler_aliceblue_depth_update(user, message),
                     run_in_background=True,
                     market_depth=True
@@ -9577,14 +9645,15 @@ class Exchange:
                         f"AliceBlue session refresh did not create a client for {user}"
                     ) from first_error
                 alice.start_websocket(
-                    socket_open_callback=lambda user=user: print(f"aliceblue market depth websocket open user={user}"),
-                    socket_close_callback=lambda user=user: print(f"aliceblue market depth websocket closed user={user}"),
-                    socket_error_callback=lambda error, user=user: print(f"aliceblue market depth websocket error user={user}: {error}"),
+                    socket_open_callback=mark_connected,
+                    socket_close_callback=mark_disconnected,
+                    socket_error_callback=mark_error,
                     subscription_callback=lambda message, user=user: self._event_handler_aliceblue_depth_update(user, message),
                     run_in_background=True,
                     market_depth=True
                 )
-            self.aliceblue_depth_started.add(user)
+            with self.aliceblue_depth_lock:
+                self.aliceblue_depth_started.add(user)
             self.db["broker_health"].update_one(
                 {"user": user, "broker": "aliceblue"},
                 {
@@ -9601,6 +9670,21 @@ class Exchange:
                 if token:
                     self._subscribe_aliceblue_depth_for_symbol(symbol, token)
         except Exception as e:
+            if "socket is already opened" in str(e).lower():
+                with self.aliceblue_depth_lock:
+                    self.aliceblue_depth_started.add(user)
+                self.db["broker_health"].update_one(
+                    {"user": user, "broker": "aliceblue"},
+                    {
+                        "$set": {
+                            "websocket_status": "connected",
+                            "last_error": "",
+                            "updated_at": datetime.datetime.utcnow(),
+                        }
+                    },
+                    upsert=True,
+                )
+                return
             self.db["broker_health"].update_one(
                 {"user": user, "broker": "aliceblue"},
                 {
@@ -9620,7 +9704,8 @@ class Exchange:
             )
             print(f"aliceblue market depth websocket start failed user={user}: {e}")
         finally:
-            self.aliceblue_depth_starting.discard(user)
+            with self.aliceblue_depth_lock:
+                self.aliceblue_depth_starting.discard(user)
 
     def _subscribe_aliceblue_depth_for_symbol(self, symbol, token=None, row=None):
         token = token or self.tok_symbols.get(symbol)

@@ -3,6 +3,7 @@ import warnings
 import math
 import json
 import logging
+import datetime
 import yaml
 import threading
 import atexit
@@ -38,6 +39,41 @@ from app.domain.brokers.aliceblue_auth import (
     AliceBlueDirectAuthenticator,
 )
 from app.domain.brokers.health import SECRET_FIELD_NAMES
+
+INDIA_MARKET_TIMEZONE = datetime.timezone(
+    datetime.timedelta(hours=5, minutes=30),
+    name="IST",
+)
+
+
+def india_market_now():
+    return datetime.datetime.now(datetime.UTC).astimezone(
+        INDIA_MARKET_TIMEZONE
+    )
+
+
+def strategy_market_window(trade, marketdays=5, intraday_close=None, now=None):
+    if now is None:
+        now = india_market_now()
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.UTC)
+    now = now.astimezone(INDIA_MARKET_TIMEZONE)
+    current_time = now.time().replace(tzinfo=None)
+    start_time = datetime.datetime.strptime(
+        trade["StartTime"], "%H:%M"
+    ).time()
+    exit_time = datetime.datetime.strptime(
+        intraday_close or trade["ExitTime"], "%H:%M"
+    ).time()
+    market_day = now.weekday() < marketdays
+    inside_window = market_day and start_time < current_time < exit_time
+    return {
+        "intraday": inside_window and bool(trade["Intraday"]),
+        "positional": inside_window and not bool(trade["Intraday"]),
+        "market_day": market_day,
+        "market_time": current_time,
+    }
+
 
 ALICEBLUE_DNS_HOSTS = {
     "a3.aliceblueonline.com",
@@ -103,7 +139,6 @@ except ImportError:
     AntA3TradeHub = None
     AntA3Instrument = None
 import pyotp
-import datetime
 import numpy as np
 import sqlite3
 import concurrent.futures
@@ -3660,7 +3695,10 @@ class Exchange:
                 
     def EMA(self,trade):
         #signal-1 for buy -1 for sell
-        if self.testmode or ((trade['user'] in self.userloggedin) and (datetime.date.today().weekday() < self.marketdays)):
+        if self.testmode or (
+            trade['user'] in self.userloggedin
+            and india_market_now().weekday() < self.marketdays
+        ):
             try:
                 if 'timetowait' not in list(trade.keys()):
                     trade['timetowait']=int(datetime.datetime.now().timestamp())
@@ -3809,8 +3847,18 @@ class Exchange:
                 #    print('3 ema')
                 if 'onspot' in list(trade.keys()):
                     #print('.nothinds')
-                    Intraday= (datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime("15:29", '%H:%M').time()) and trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
-                    positional=(datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and not trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
+                    window = strategy_market_window(
+                        trade,
+                        marketdays=self.marketdays,
+                        intraday_close="15:29",
+                    )
+                    Intraday = window["intraday"]
+                    positional = (
+                        strategy_market_window(
+                            trade,
+                            marketdays=self.marketdays,
+                        )["positional"]
+                    )
                     if Intraday or positional or self.testmode:
                         if trade['position']=='in':
                             #print('Hello')
@@ -3820,28 +3868,16 @@ class Exchange:
                     wait_elapsed = trade['timetowait'] <= now_timestamp
                     if trade['position'] == 'out' and trade['status'] == 'opened':
                         entry_intraday = (
-                            datetime.datetime.now().time()
-                            > datetime.datetime.strptime(
-                                trade['StartTime'], '%H:%M'
-                            ).time()
-                            and datetime.datetime.now().time()
-                            < datetime.datetime.strptime(
-                                trade['ExitTime'], '%H:%M'
-                            ).time()
-                            and trade['Intraday']
-                            and datetime.date.today().weekday() < self.marketdays
+                            strategy_market_window(
+                                trade,
+                                marketdays=self.marketdays,
+                            )["intraday"]
                         )
                         entry_positional = (
-                            datetime.datetime.now().time()
-                            > datetime.datetime.strptime(
-                                trade['StartTime'], '%H:%M'
-                            ).time()
-                            and datetime.datetime.now().time()
-                            < datetime.datetime.strptime(
-                                trade['ExitTime'], '%H:%M'
-                            ).time()
-                            and not trade['Intraday']
-                            and datetime.date.today().weekday() < self.marketdays
+                            strategy_market_window(
+                                trade,
+                                marketdays=self.marketdays,
+                            )["positional"]
                         )
                         gate_details = dict(
                             user=trade.get("user"),
@@ -3889,8 +3925,12 @@ class Exchange:
                             gate_details,
                         )
                     if  trade['position']=='out' and trade['status']=='opened' and wait_elapsed:
-                        Intraday= (datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
-                        positional=(datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and not trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
+                        entry_window = strategy_market_window(
+                            trade,
+                            marketdays=self.marketdays,
+                        )
+                        Intraday = entry_window["intraday"]
+                        positional = entry_window["positional"]
                         gate_details = dict(
                             user=trade.get("user"),
                             strategy_id=trade.get("botcode"),
@@ -3938,8 +3978,18 @@ class Exchange:
                 else:
                     #if trade['user']=='kinguniverse129':        
                     #    print('4 ema')
-                    Intraday= (datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime("15:29", '%H:%M').time()) and trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
-                    positional=(datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and not trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
+                    window = strategy_market_window(
+                        trade,
+                        marketdays=self.marketdays,
+                        intraday_close="15:29",
+                    )
+                    Intraday = window["intraday"]
+                    positional = (
+                        strategy_market_window(
+                            trade,
+                            marketdays=self.marketdays,
+                        )["positional"]
+                    )
                     if Intraday or positional or self.testmode:
                         if trade['position']=='in':
                             #print(trade)
@@ -3954,8 +4004,12 @@ class Exchange:
                     if  trade['position']=='out' and trade['status']=='opened' and trade['timetowait'] <= int(datetime.datetime.now().timestamp()):
                         #if trade['user']=='kinguniverse129':
                         #    print(trade)
-                        Intraday= (datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
-                        positional=(datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and not trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
+                        entry_window = strategy_market_window(
+                            trade,
+                            marketdays=self.marketdays,
+                        )
+                        Intraday = entry_window["intraday"]
+                        positional = entry_window["positional"]
                         if Intraday or positional or self.testmode:
                             if trade['BSmode']:
                                 #if trade['user']=='kinguniverse129':
@@ -4169,7 +4223,7 @@ class Exchange:
         return df
 
     def _is_exchange_open_for_live_order(self, exchange):
-        now = datetime.datetime.now()
+        now = india_market_now()
         if now.weekday() >= self.marketdays:
             return False, 'market holiday/weekend'
         if exchange in {'NFO', 'BFO', 'NSE', 'BSE'}:
@@ -4180,7 +4234,7 @@ class Exchange:
             end = datetime.time(23, 55)
         else:
             return False, f'unsupported exchange {exchange}'
-        if not (start <= now.time() <= end):
+        if not (start <= now.time().replace(tzinfo=None) <= end):
             return False, f'market closed for {exchange}'
         return True, ''
 

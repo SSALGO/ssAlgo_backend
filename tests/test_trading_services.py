@@ -24,7 +24,7 @@ from app.domain.risk.service import RiskControlService
 from app.workers.trading_worker import TradingWorker
 from app.core.logging_config import sanitize_log_value
 from app.core.secrets import decrypt_secret, encrypt_secret
-from connectors.connector import Exchange
+from connectors.connector import Exchange, strategy_market_window
 from models import EMA_fut_mode, EMA_mode, SSTRIKE_mode
 
 
@@ -52,6 +52,39 @@ class FakeHttpSession:
             "timeout": timeout,
         })
         return FakeHttpResponse(self.responses.pop(0))
+
+
+def test_strategy_market_window_uses_india_time_on_utc_host():
+    trade = {
+        "StartTime": "09:15",
+        "ExitTime": "15:20",
+        "Intraday": True,
+    }
+    utc_time = datetime.datetime(
+        2026, 6, 15, 5, 8, tzinfo=datetime.UTC
+    )
+
+    window = strategy_market_window(trade, now=utc_time)
+
+    assert window["market_time"] == datetime.time(10, 38)
+    assert window["intraday"] is True
+    assert window["positional"] is False
+
+
+def test_strategy_market_window_rejects_utc_time_after_india_close():
+    trade = {
+        "StartTime": "09:15",
+        "ExitTime": "15:20",
+        "Intraday": True,
+    }
+    utc_time = datetime.datetime(
+        2026, 6, 15, 10, 0, tzinfo=datetime.UTC
+    )
+
+    window = strategy_market_window(trade, now=utc_time)
+
+    assert window["market_time"] == datetime.time(15, 30)
+    assert window["intraday"] is False
 
 
 def test_aliceblue_sdk_import_reports_nested_missing_dependency(monkeypatch):

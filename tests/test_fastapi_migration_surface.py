@@ -16,11 +16,26 @@ def test_fastapi_exposes_migration_and_worker_routes():
     paths = {route.path for route in fastapi_app.app.routes if hasattr(route, "path")}
     assert "/api/migration/legacy-routes" in paths
     assert "/api/worker/status" in paths
+    assert "/api/mcx/strategies" in paths
     assert "/api_{legacy_path:path}" not in paths
     assert "/api_users" in paths
     assert "/api_add_ssalgo" in paths
     assert "/api_pay" in paths
     assert "/api_historicalbacktest" in paths
+
+
+def test_mcx_strategy_catalog_contains_ranked_production_blueprint():
+    from app.domain.mcx.strategy_catalog import mcx_strategy_catalog
+
+    catalog = mcx_strategy_catalog()
+
+    assert catalog["product_name"] == "MCX Strategy Lab"
+    assert len(catalog["strategies"]) >= 6
+    assert [strategy["rank"] for strategy in catalog["top_3"]] == [1, 2, 3]
+    assert catalog["strategies"][0]["strategy_name"] == "MCX Opening Range Breakout"
+    assert catalog["complete_trading_rules"]
+    assert catalog["risk_management_framework"]["kill_switches"]
+    assert any(table["table"] == "mcx_order_executions" for table in catalog["database_schema_requirements"])
 
 
 def test_legacy_login_token_is_real_jwt(monkeypatch):

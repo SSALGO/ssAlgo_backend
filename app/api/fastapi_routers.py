@@ -28,6 +28,7 @@ from app.domain.audit.service import AuditLogService
 from app.domain.brokers.adapters import BrokerCredentials, BrokerOrder
 from app.domain.brokers.health import SECRET_FIELD_NAMES
 from app.domain.brokers.registry import broker_lookup_ids, broker_payload, normalize_broker_id
+from app.domain.mcx.strategy_catalog import mcx_strategy_catalog
 from app.domain.reconciliation.service import BrokerReconciliationService
 from app.realtime.dashboard import DashboardConnectionManager
 from app.workers.control import WorkerControlService
@@ -38,6 +39,7 @@ broker_router = APIRouter(prefix="/api/brokers", tags=["brokers"])
 paper_router = APIRouter(prefix="/api/paper", tags=["paper"])
 order_router = APIRouter(prefix="/api/orders", tags=["orders"])
 backtest_router = APIRouter(prefix="/api/backtests", tags=["backtests"])
+mcx_router = APIRouter(prefix="/api/mcx", tags=["mcx"])
 legacy_router = APIRouter(tags=["legacy aliases"])
 ws_router = APIRouter(tags=["websocket"])
 dashboard_connections = DashboardConnectionManager()
@@ -104,6 +106,13 @@ def register(payload: RegisterRequest):
 @auth_router.post("/logout", response_model=ApiResponse)
 def logout(_user=Depends(get_current_user)):
     return ApiResponse(success=True, message="Successfully logged out")
+
+
+@mcx_router.get("/strategies", response_model=ApiResponse)
+def list_mcx_strategy_research(user=Depends(get_current_user)):
+    catalog = mcx_strategy_catalog()
+    catalog["user"] = username(user)
+    return ApiResponse(success=True, message="MCX strategy catalog fetched", data=catalog)
 
 
 @broker_router.get("", response_model=ApiResponse)

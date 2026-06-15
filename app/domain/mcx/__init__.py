@@ -1,0 +1,2 @@
+"""MCX strategy research catalog."""
+

@@ -38,6 +38,7 @@ from app.domain.brokers.aliceblue_auth import (
     AliceBlueDirectAuthError,
     AliceBlueDirectAuthenticator,
 )
+from app.domain.brokers.diagnostics import log_aliceblue_diagnostic
 from app.domain.brokers.health import SECRET_FIELD_NAMES
 
 INDIA_MARKET_TIMEZONE = datetime.timezone(
@@ -9832,11 +9833,46 @@ class Exchange:
             f"ask={(price_context or {}).get('ask')}, "
             f"ltp={(price_context or {}).get('ltp')}"
         )
+        log_aliceblue_diagnostic(
+            "aliceblue_legacy_order_request",
+            user=user,
+            symbol=symbol,
+            exchange=exch,
+            optiontoken=optiontoken,
+            side=side,
+            quantity=quantity,
+            price=limit_price,
+            order_type="LIMIT",
+            product_type=product_type,
+            request_payload=order_kwargs,
+            price_context=price_context,
+        )
         ret = self.alice[user].place_order(**order_kwargs)
+        log_aliceblue_diagnostic(
+            "aliceblue_legacy_order_response",
+            user=user,
+            symbol=symbol,
+            exchange=exch,
+            optiontoken=optiontoken,
+            side=side,
+            quantity=quantity,
+            response_payload=ret,
+        )
         if self._is_unauthorized_response(ret):
             refreshed = self._refresh_aliceblue_session(user)
             if refreshed:
                 ret = self.alice[user].place_order(**order_kwargs)
+                log_aliceblue_diagnostic(
+                    "aliceblue_legacy_order_response",
+                    user=user,
+                    symbol=symbol,
+                    exchange=exch,
+                    optiontoken=optiontoken,
+                    side=side,
+                    quantity=quantity,
+                    response_payload=ret,
+                    after_refresh=True,
+                )
         if self._broker_order_ok(ret):
             self._remember_recent_broker_order(
                 user, symbol, side,

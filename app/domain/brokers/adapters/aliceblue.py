@@ -2,6 +2,11 @@ import contextlib
 import datetime
 import io
 
+from app.domain.brokers.aliceblue_auth import (
+    AliceBlueDirectAuthError,
+    AliceBlueDirectAuthenticator,
+)
+from app.domain.brokers.diagnostics import log_aliceblue_diagnostic
 from app.core.secrets import encrypt_secret
 from app.core.trading_debug import trading_event, trading_exception
 from .live_base import NormalizedLiveBrokerAdapter
@@ -35,6 +40,29 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
 
     ORDER_TYPE_MAP = {"MARKET": "MARKET", "MKT": "MARKET", "LIMIT": "LIMIT", "L": "LIMIT"}
 
+    @staticmethod
+    def _session_value(response):
+        if not isinstance(response, dict):
+            return None
+        return response.get("sessionID") or response.get("userSession")
+
+    def _save_session(self, user, session_value, auth_code=None):
+        if self.db is None or not session_value:
+            return
+        encrypted_session = encrypt_secret(session_value)
+        fields = {
+            "user_session": encrypted_session,
+            "sessionID": encrypted_session,
+            "session_date": datetime.datetime.now().strftime("%Y-%m-%d"),
+        }
+        if auth_code:
+            fields["auth_code"] = encrypt_secret(auth_code)
+        self.db["apis"].update_one(
+            {"user": user, "broker": self.broker_name},
+            {"$set": fields},
+            upsert=True,
+        )
+
     def login(self, credentials):
         values = self.load_credentials(credentials)
         user_id = str(values.get("apikey") or "").strip()
@@ -46,8 +74,22 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
 
         TradeHub = load_trade_hub()
         self.client = TradeHub(user_id=user_id, auth_code=auth_code, secret_key=secret_key, session_id=session_id)
+        log_aliceblue_diagnostic(
+            "aliceblue_login_attempt",
+            user=credentials.user,
+            account_id=user_id,
+            auth_code_present=bool(auth_code),
+            saved_session_present=bool(session_id),
+        )
         with contextlib.redirect_stdout(io.StringIO()):
             response = self.client.get_session_id(session_id=session_id) if session_id else self.client.get_session_id()
+        log_aliceblue_diagnostic(
+            "aliceblue_session_response",
+            user=credentials.user,
+            account_id=user_id,
+            source="saved_session" if session_id else "auth_code",
+            response=response,
+        )
         normalized = self.normalize_response("login", response, submitted_status="connected")
 
         def validate_session(candidate_response):
@@ -109,10 +151,87 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             )
             with contextlib.redirect_stdout(io.StringIO()):
                 response = self.client.get_session_id()
+            log_aliceblue_diagnostic(
+                "aliceblue_session_response",
+                user=credentials.user,
+                account_id=user_id,
+                source="auth_code_after_saved_session_rejected",
+                response=response,
+            )
             normalized = self.normalize_response(
                 "login", response, submitted_status="connected"
             )
             session_value, profile_result = validate_session(response)
+
+        if not session_value:
+            direct_values = {
+                "user_id": user_id,
+                "password": (
+                    values.get("alice_password")
+                    or values.get("password")
+                    or values.get("pwd")
+                ),
+                "totp_secret": values.get("totp_key"),
+                "app_code": values.get("app_key") or values.get("app_code"),
+                "app_secret": secret_key,
+            }
+            direct_missing = [
+                name
+                for name, value in direct_values.items()
+                if not str(value or "").strip()
+            ]
+            if not direct_missing:
+                try:
+                    direct_result = AliceBlueDirectAuthenticator().authenticate(
+                        **direct_values
+                    )
+                    auth_code = direct_result["auth_code"]
+                    session_value = direct_result["session_id"]
+                    self.client = TradeHub(
+                        user_id=user_id,
+                        auth_code=auth_code,
+                        secret_key=secret_key,
+                        session_id=session_value,
+                    )
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        response = self.client.get_session_id(
+                            session_id=session_value
+                        )
+                    log_aliceblue_diagnostic(
+                        "aliceblue_session_response",
+                        user=credentials.user,
+                        account_id=user_id,
+                        source="direct_password_totp_refresh",
+                        response=response,
+                    )
+                    normalized = self.normalize_response(
+                        "login", response, submitted_status="connected"
+                    )
+                    session_value, profile_result = validate_session(response)
+                    if session_value and profile_result.get("success"):
+                        self._save_session(
+                            credentials.user,
+                            session_value,
+                            auth_code=auth_code,
+                        )
+                except AliceBlueDirectAuthError as exc:
+                    profile_result = {
+                        "success": False,
+                        "status": "rejected",
+                        "message": str(exc),
+                    }
+                except Exception as exc:
+                    trading_exception(
+                        "broker_login_direct_auth_error",
+                        exc,
+                        user=credentials.user,
+                        broker=self.broker_name,
+                    )
+                    profile_result = {
+                        "success": False,
+                        "status": "rejected",
+                        "message": str(exc),
+                    }
 
         if session_value:
             normalized["success"] = bool(profile_result["success"])
@@ -123,19 +242,8 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
                 "ok" if normalized["success"] else profile_result["message"]
             )
             normalized["profile_check"] = profile_result
-            if normalized["success"] and self.db is not None:
-                encrypted_session = encrypt_secret(session_value)
-                self.db["apis"].update_one(
-                    {"user": credentials.user, "broker": self.broker_name},
-                    {
-                        "$set": {
-                            "user_session": encrypted_session,
-                            "sessionID": encrypted_session,
-                            "session_date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                        }
-                    },
-                    upsert=True,
-                )
+            if normalized["success"]:
+                self._save_session(credentials.user, session_value)
         else:
             normalized["success"] = False
             normalized["status"] = "rejected"
@@ -180,8 +288,28 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             quantity=order.quantity,
             payload=request_payload,
         )
+        log_aliceblue_diagnostic(
+            "aliceblue_order_request",
+            user=order.user,
+            account_id=self.credentials.get("apikey"),
+            strategy_id=order.strategy_id,
+            symbol=order.symbol,
+            exchange=order.exchange or metadata.get("exchange") or metadata.get("exch"),
+            quantity=order.quantity,
+            price=request_payload.get("price"),
+            order_type=order_type,
+            request_payload=request_payload,
+        )
         try:
             response = client.placeOrder(**request_payload)
+            log_aliceblue_diagnostic(
+                "aliceblue_order_response",
+                user=order.user,
+                account_id=self.credentials.get("apikey"),
+                strategy_id=order.strategy_id,
+                symbol=order.symbol,
+                response_payload=response,
+            )
         except Exception as exc:
             trading_exception(
                 "broker_api_error",

@@ -845,6 +845,71 @@ def test_broker_saved_credentials_are_returned_masked(fake_db):
     assert aliceblue["secret_present"]["sessionID"] is True
 
 
+def test_aliceblue_login_regenerates_session_from_saved_direct_credentials(fake_db, monkeypatch):
+    from app.domain.brokers.adapters import aliceblue as aliceblue_module
+
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "aliceblue",
+        "apikey": "1775863",
+        "apisecret": encrypt_secret("app-secret"),
+        "auth_code": encrypt_secret("old-auth"),
+        "user_session": encrypt_secret("old-session"),
+        "sessionID": encrypt_secret("old-session"),
+        "alice_password": encrypt_secret("password"),
+        "totp_key": encrypt_secret("JBSWY3DPEHPK3PXP"),
+        "app_key": "app-key",
+    })
+
+    class FakeTradeHub:
+        def __init__(self, user_id, auth_code, secret_key, session_id=None):
+            self.user_id = user_id
+            self.auth_code = auth_code
+            self.secret_key = secret_key
+            self.session_id = session_id
+
+        def get_session_id(self, session_id=None):
+            candidate = session_id or self.session_id
+            if candidate == "new-session":
+                return {"userSession": "new-session"}
+            if candidate == "old-session":
+                return {"userSession": "old-session"}
+            return {"stat": "Not_ok", "emsg": "Session ID not found in response."}
+
+        def get_profile(self):
+            if self.session_id == "new-session":
+                return {"stat": "Ok", "result": [{"name": "Alice"}]}
+            return {"stat": "Not_ok", "emsg": "401 - Unauthorized"}
+
+    class FakeDirectAuthenticator:
+        def authenticate(self, **kwargs):
+            assert kwargs["user_id"] == "1775863"
+            assert kwargs["password"] == "password"
+            assert kwargs["totp_secret"] == "JBSWY3DPEHPK3PXP"
+            assert kwargs["app_code"] == "app-key"
+            assert kwargs["app_secret"] == "app-secret"
+            return {"auth_code": "new-auth", "session_id": "new-session"}
+
+    monkeypatch.setattr(aliceblue_module, "load_trade_hub", lambda: FakeTradeHub)
+    monkeypatch.setattr(
+        aliceblue_module,
+        "AliceBlueDirectAuthenticator",
+        FakeDirectAuthenticator,
+    )
+
+    adapter = AliceBlueBrokerAdapter(
+        db=fake_db,
+        health_service=BrokerHealthService(fake_db),
+    )
+    result = adapter.login(BrokerCredentials(user="alice", broker="aliceblue"))
+
+    saved = fake_db["apis"].find_one({"user": "alice", "broker": "aliceblue"})
+    assert result["success"] is True
+    assert decrypt_secret(saved["auth_code"]) == "new-auth"
+    assert decrypt_secret(saved["user_session"]) == "new-session"
+    assert decrypt_secret(saved["sessionID"]) == "new-session"
+
+
 def test_broker_legacy_delta_alias_is_canonicalized(fake_db):
     fake_db["apis"].insert_one({
         "user": "alice",

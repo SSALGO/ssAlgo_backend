@@ -10,6 +10,11 @@ import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
+from app.domain.brokers.diagnostics import (
+    log_aliceblue_diagnostic,
+    response_summary,
+)
+
 
 ALICEBLUE_LOGIN_BASE_URL = "https://ant.aliceblueonline.com/omk/"
 ALICEBLUE_LOGIN_ORIGIN = "https://ant.aliceblueonline.com"
@@ -68,7 +73,16 @@ class AliceBlueDirectAuthenticator:
         return {}
 
     def _post(self, url, payload, headers, stage):
+        response = None
+        body = None
         try:
+            log_aliceblue_diagnostic(
+                "aliceblue_auth_request",
+                stage=stage,
+                url=url,
+                request_payload=payload,
+                request_headers=headers,
+            )
             response = self.http.post(
                 url,
                 json=payload,
@@ -77,17 +91,44 @@ class AliceBlueDirectAuthenticator:
             )
             response.raise_for_status()
             body = response.json()
+            log_aliceblue_diagnostic(
+                "aliceblue_auth_response",
+                stage=stage,
+                **response_summary(response, body),
+            )
         except requests.RequestException as exc:
+            if response is not None:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = getattr(response, "text", "")
+                log_aliceblue_diagnostic(
+                    "aliceblue_auth_response_error",
+                    stage=stage,
+                    error=str(exc),
+                    **response_summary(response, body),
+                )
             raise AliceBlueDirectAuthError(
                 f"{stage} request failed: {type(exc).__name__}"
             ) from exc
         except ValueError as exc:
+            log_aliceblue_diagnostic(
+                "aliceblue_auth_non_json_response",
+                stage=stage,
+                http_status=getattr(response, "status_code", None),
+                body=getattr(response, "text", ""),
+            )
             raise AliceBlueDirectAuthError(
                 f"{stage} returned a non-JSON response"
             ) from exc
 
         status = str(body.get("status") or body.get("stat") or "").strip().lower()
         if status not in {"ok", "success"}:
+            log_aliceblue_diagnostic(
+                "aliceblue_auth_rejected",
+                stage=stage,
+                response_body=body,
+            )
             raise AliceBlueDirectAuthError(
                 f"{stage} rejected: {self._message(body, 'unknown error')}"
             )

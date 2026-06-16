@@ -59,6 +59,22 @@ class AppConfig:
     KITE_API_SECRET = os.getenv('SSLAGO_KITE_API_SECRET') or os.getenv('KITE_API_SECRET', '')
     KITE_REDIRECT_URL = os.getenv('SSLAGO_KITE_REDIRECT_URL') or os.getenv('KITE_REDIRECT_URL', '')
     KITE_POSTBACK_URL = os.getenv('SSLAGO_KITE_POSTBACK_URL') or os.getenv('KITE_POSTBACK_URL', '')
+    MARKET_FEED_PROVIDER = os.getenv('SSLAGO_MARKET_FEED_PROVIDER', 'zerodha').strip().lower()
+    MARKET_FEED_PROVIDERS = _csv_env(
+        'SSLAGO_MARKET_FEED_PROVIDERS',
+        os.getenv('SSLAGO_MARKET_FEED_PROVIDER', 'upstox,aliceblue,zerodha'),
+    )
+    MARKET_FEED_FAILOVER_MODE = os.getenv(
+        'SSLAGO_MARKET_FEED_FAILOVER_MODE',
+        'connect_failure_only',
+    ).strip().lower()
+    MARKET_FEED_USER = os.getenv('SSLAGO_MARKET_FEED_USER', '').strip()
+    MARKET_FEED_ACCESS_TOKEN = os.getenv('SSLAGO_MARKET_FEED_ACCESS_TOKEN', '').strip()
+    UPSTOX_ACCESS_TOKEN = os.getenv('SSLAGO_UPSTOX_ACCESS_TOKEN', '').strip()
+    ALICEBLUE_MARKET_FEED_USER = os.getenv('SSLAGO_ALICEBLUE_MARKET_FEED_USER', '').strip()
+    ALICEBLUE_MARKET_FEED_SESSION_ID = os.getenv('SSLAGO_ALICEBLUE_MARKET_FEED_SESSION_ID', '').strip()
+    MARKET_PRICE_STALE_SECONDS = int(os.getenv('SSLAGO_MARKET_PRICE_STALE_SECONDS', '15'))
+    MARKET_PRICE_WRITE_INTERVAL_SECONDS = float(os.getenv('SSLAGO_MARKET_PRICE_WRITE_INTERVAL_SECONDS', '0.25'))
     FRONTEND_BROKER_CALLBACK_URL = os.getenv(
         'SSLAGO_FRONTEND_BROKER_CALLBACK_URL',
         'http://localhost:5173/broker-setup',

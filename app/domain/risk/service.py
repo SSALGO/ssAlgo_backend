@@ -163,6 +163,7 @@ class RiskControlService:
         row = (
             self.db["paper_quotes"].find_one({"user": user, "symbol": symbol})
             or self.db["market_quotes"].find_one({"user": user, "symbol": symbol})
+            or self.db["market_prices"].find_one({"symbol": str(symbol or "").strip().upper()})
             or self.db["paper_quotes"].find_one({"symbol": symbol})
             or self.db["market_quotes"].find_one({"symbol": symbol})
         )
@@ -362,12 +363,9 @@ class RiskControlService:
 
         if mode != "paper" and settings.get("block_on_broker_disconnect"):
             health = self._broker_health(user, broker)
-            websocket_status = str(health.get("websocket_status") or "").lower()
             login_status = str(health.get("login_status") or "").lower()
             if login_status != "connected":
                 return RiskCheckResult(False, "Broker login is not connected", checks)
-            if websocket_status and websocket_status not in {"connected", "unknown"}:
-                return RiskCheckResult(False, "Broker websocket is disconnected", checks)
         checks.append("broker_health")
 
         if not symbol:

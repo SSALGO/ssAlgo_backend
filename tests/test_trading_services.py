@@ -445,71 +445,12 @@ def test_aliceblue_saved_session_does_not_require_daily_browser_login(fake_db):
     assert exchange._aliceblue_user_verified_today("alice") is True
 
 
-def test_aliceblue_direct_authentication_runs_without_browser(monkeypatch):
-    http = FakeHttpSession([
-        {"status": "Ok", "message": "Success", "result": [{"isExist": "Yes"}]},
-        {"status": "Ok", "message": "Success", "result": [{"encKey": "passphrase"}]},
-        {"status": "Ok", "message": "Success", "result": [{"token": "password-token"}]},
-        {"status": "Ok", "message": "Success", "result": [{"token": "totp-token"}]},
-        {
-            "status": "Ok",
-            "message": "Success",
-            "result": [{
-                "authorized": True,
-                "redirectUrl": (
-                    "http://127.0.0.1:5000?"
-                    "authCode=fresh-auth-code&userId=AB123"
-                ),
-            }],
-        },
-        {"stat": "Ok", "userSession": "fresh-session"},
-    ])
-    monkeypatch.setattr(
-        AliceBlueDirectAuthenticator,
-        "_totp_value",
-        staticmethod(lambda _secret: "123456"),
-    )
-
-    result = AliceBlueDirectAuthenticator(http=http).authenticate(
-        user_id="AB123",
-        password="password",
-        totp_secret="JBSWY3DPEHPK3PXP",
-        app_code="app-code",
-        app_secret="app-secret",
-    )
-
-    assert result == {
-        "user_id": "AB123",
-        "auth_code": "fresh-auth-code",
-        "session_id": "fresh-session",
-    }
-    assert len(http.requests) == 6
-    assert http.requests[2]["json"]["userData"] != "password"
-    assert http.requests[3]["json"]["totp"] == "123456"
-    assert http.requests[3]["headers"]["Authorization"] == (
-        "Bearer AB123 WEB password-token"
-    )
-    assert all("playwright" not in request["url"].lower() for request in http.requests)
-
-
-def test_aliceblue_direct_authentication_reports_totp_rejection(monkeypatch):
-    http = FakeHttpSession([
-        {"status": "Ok", "message": "Success", "result": [{"isExist": "Yes"}]},
-        {"status": "Ok", "message": "Success", "result": [{"encKey": "passphrase"}]},
-        {"status": "Ok", "message": "Success", "result": [{"token": "password-token"}]},
-        {"status": "Not ok", "message": "Invalid totp", "result": []},
-    ])
-    monkeypatch.setattr(
-        AliceBlueDirectAuthenticator,
-        "_totp_value",
-        staticmethod(lambda _secret: "123456"),
-    )
-
+def test_aliceblue_direct_authentication_is_disabled():
     with pytest.raises(
         AliceBlueDirectAuthError,
-        match="TOTP verification rejected: Invalid totp",
+        match="password/TOTP authentication is disabled",
     ):
-        AliceBlueDirectAuthenticator(http=http).authenticate(
+        AliceBlueDirectAuthenticator().authenticate(
             user_id="AB123",
             password="password",
             totp_secret="JBSWY3DPEHPK3PXP",
@@ -517,36 +458,7 @@ def test_aliceblue_direct_authentication_reports_totp_rejection(monkeypatch):
             app_secret="app-secret",
         )
 
-    assert len(http.requests) == 4
-
-
-def test_aliceblue_refresh_persists_direct_auth_session(monkeypatch, fake_db):
-    class FakeDirectAuthenticator:
-        def authenticate(self, **_kwargs):
-            return {
-                "user_id": "AB123",
-                "auth_code": "fresh-auth-code",
-                "session_id": "fresh-session",
-            }
-
-    class FakeAlice:
-        def __init__(self, **_kwargs):
-            pass
-
-        def get_session_id(self, session_id=None):
-            return {"sessionID": session_id}
-
-        def get_profile(self):
-            return {"status": "Ok", "result": [{"userId": "AB123"}]}
-
-    monkeypatch.setattr(
-        "connectors.connector.AliceBlueDirectAuthenticator",
-        FakeDirectAuthenticator,
-    )
-    monkeypatch.setattr(
-        "connectors.connector.AliceBlueTradeHubAdapter",
-        FakeAlice,
-    )
+def test_aliceblue_refresh_marks_reconnect_required_without_redirect_session(fake_db):
     fake_db["apis"].insert_one({
         "user": "alice",
         "broker": "aliceblue",
@@ -569,11 +481,11 @@ def test_aliceblue_refresh_persists_direct_auth_session(monkeypatch, fake_db):
         "broker": "aliceblue",
     })
 
-    assert refreshed is not None
-    assert decrypt_secret(saved["auth_code"]) == "fresh-auth-code"
-    assert decrypt_secret(saved["user_session"]) == "fresh-session"
-    assert health["login_status"] == "connected"
-    assert health["last_error"] == ""
+    assert refreshed is None
+    assert saved.get("user_session") is None
+    assert health["login_status"] == "rejected"
+    assert health["token_status"] == "reconnect_required"
+    assert "requires broker reconnect" in health["last_error"]
 
 
 def test_market_price_uses_fresh_aliceblue_depth_when_ltp_is_missing():
@@ -599,6 +511,96 @@ def test_market_price_uses_fresh_aliceblue_depth_when_ltp_is_missing():
 
     assert price == 101
     assert exchange.prices["NIFTY16JUN26C23600"] == 101
+
+
+def test_market_price_prefers_shared_market_price_store(fake_db):
+    from app.domain.market_data import MarketPriceRepository
+
+    exchange = Exchange.__new__(Exchange)
+    exchange.db = fake_db
+    exchange.prices = {}
+    exchange.sprices = {}
+    exchange.dataframes = {}
+    exchange.api = None
+    exchange.market_depth_max_age_seconds = 3
+    exchange.market_depths = {}
+    MarketPriceRepository(fake_db).save_price(
+        symbol="NIFTY26JUNFUT",
+        exchange="NFO",
+        token=12345,
+        provider="zerodha",
+        ltp=24100.25,
+    )
+
+    price = exchange._get_market_price("NIFTY26JUNFUT", "NFO", 12345)
+
+    assert price == 24100.25
+    assert exchange.prices["NIFTY26JUNFUT"] == 24100.25
+
+
+def test_market_price_uses_active_fallback_provider(fake_db):
+    from app.domain.market_data import MarketPriceRepository
+
+    exchange = Exchange.__new__(Exchange)
+    exchange.db = fake_db
+    exchange.prices = {}
+    exchange.sprices = {}
+    exchange.dataframes = {}
+    exchange.api = None
+    exchange.market_depth_max_age_seconds = 3
+    exchange.market_depths = {}
+    repository = MarketPriceRepository(fake_db)
+    repository.update_global_health(
+        connected=True,
+        status="connected",
+        active_provider="aliceblue",
+        provider_chain=["upstox", "aliceblue", "zerodha"],
+        failed_providers=["upstox"],
+    )
+    repository.save_price(
+        symbol="NIFTY26JUNFUT",
+        exchange="NFO",
+        token=12345,
+        provider="aliceblue",
+        ltp=24102.5,
+    )
+    repository.save_price(
+        symbol="NIFTY26JUNFUT",
+        exchange="NFO",
+        token=12345,
+        provider="zerodha",
+        ltp=24000.0,
+    )
+
+    price = exchange._get_market_price("NIFTY26JUNFUT", "NFO", 12345)
+
+    assert price == 24102.5
+
+
+def test_market_price_repository_throttles_db_writes_but_returns_latest_cache(fake_db):
+    from app.domain.market_data import MarketPriceRepository
+
+    repository = MarketPriceRepository(fake_db, write_interval_seconds=60)
+    repository.save_price(
+        symbol="NIFTY26JUNFUT",
+        exchange="NFO",
+        token=12345,
+        provider="zerodha",
+        ltp=24100.0,
+    )
+    repository.save_price(
+        symbol="NIFTY26JUNFUT",
+        exchange="NFO",
+        token=12345,
+        provider="zerodha",
+        ltp=24105.5,
+    )
+
+    saved = fake_db["market_prices"].find_one({"symbol": "NIFTY26JUNFUT", "provider": "zerodha"})
+    latest = repository.latest_price(symbol="NIFTY26JUNFUT", provider="zerodha")
+
+    assert saved["ltp"] == 24100.0
+    assert latest["ltp"] == 24105.5
 
 
 def test_option_quote_wait_allows_websocket_tick_to_arrive():
@@ -1070,7 +1072,7 @@ def test_broker_saved_credentials_are_returned_masked(fake_db):
     assert aliceblue["secret_present"]["sessionID"] is True
 
 
-def test_aliceblue_login_regenerates_session_from_saved_direct_credentials(fake_db, monkeypatch):
+def test_aliceblue_login_rejects_expired_saved_session_without_redirect_reconnect(fake_db, monkeypatch):
     from app.domain.brokers.adapters import aliceblue as aliceblue_module
 
     fake_db["apis"].insert_one({
@@ -1106,21 +1108,7 @@ def test_aliceblue_login_regenerates_session_from_saved_direct_credentials(fake_
                 return {"stat": "Ok", "result": [{"name": "Alice"}]}
             return {"stat": "Not_ok", "emsg": "401 - Unauthorized"}
 
-    class FakeDirectAuthenticator:
-        def authenticate(self, **kwargs):
-            assert kwargs["user_id"] == "1775863"
-            assert kwargs["password"] == "password"
-            assert kwargs["totp_secret"] == "JBSWY3DPEHPK3PXP"
-            assert kwargs["app_code"] == "app-key"
-            assert kwargs["app_secret"] == "app-secret"
-            return {"auth_code": "new-auth", "session_id": "new-session"}
-
     monkeypatch.setattr(aliceblue_module, "load_trade_hub", lambda: FakeTradeHub)
-    monkeypatch.setattr(
-        aliceblue_module,
-        "AliceBlueDirectAuthenticator",
-        FakeDirectAuthenticator,
-    )
 
     adapter = AliceBlueBrokerAdapter(
         db=fake_db,
@@ -1129,10 +1117,12 @@ def test_aliceblue_login_regenerates_session_from_saved_direct_credentials(fake_
     result = adapter.login(BrokerCredentials(user="alice", broker="aliceblue"))
 
     saved = fake_db["apis"].find_one({"user": "alice", "broker": "aliceblue"})
-    assert result["success"] is True
-    assert decrypt_secret(saved["auth_code"]) == "new-auth"
-    assert decrypt_secret(saved["user_session"]) == "new-session"
-    assert decrypt_secret(saved["sessionID"]) == "new-session"
+    assert result["success"] is False
+    assert result["status"] == "rejected"
+    assert "session token" in result["message"] or "Session ID not found" in result["message"]
+    assert decrypt_secret(saved["auth_code"]) == "old-auth"
+    assert decrypt_secret(saved["user_session"]) == "old-session"
+    assert decrypt_secret(saved["sessionID"]) == "old-session"
 
 
 def test_broker_legacy_delta_alias_is_canonicalized(fake_db):
@@ -1165,7 +1155,7 @@ def test_backtest_returns_required_metrics():
     assert isinstance(result["equity_curve"], list)
 
 
-def test_risk_blocks_live_orders_by_default():
+def test_risk_blocks_live_orders_without_connected_broker_by_default():
     from conftest import FakeDatabase
 
     risk = RiskControlService(FakeDatabase())
@@ -1175,9 +1165,10 @@ def test_risk_blocks_live_orders_by_default():
         symbol="NIFTY",
         side="BUY",
         quantity=1,
+        metadata={"idempotency_key": "risk-default-1"},
     ))
     assert result.allowed is False
-    assert "Live trading is disabled" in result.reason
+    assert "Broker login is not connected" in result.reason
 
 
 def test_risk_uses_profile_trade_and_loss_limits(fake_db):
@@ -1364,7 +1355,7 @@ def test_risk_blocks_strategy_cooldown_after_loss(fake_db):
 def test_secret_encryption_round_trips_without_plaintext():
     encrypted = encrypt_secret("super-secret")
     assert encrypted != "super-secret"
-    assert encrypted.startswith("enc:v1:")
+    assert encrypted.startswith(("enc:v1:", "fernet:v1:"))
     assert decrypt_secret(encrypted) == "super-secret"
 
 
@@ -1469,20 +1460,23 @@ def test_fyers_adapter_contract(monkeypatch, fake_db):
 
 
 def test_zerodha_adapter_contract(monkeypatch, fake_db):
-    class FakeKite:
-        def __init__(self, api_key):
-            self.api_key = api_key
+    from app.domain.brokers.adapters import zerodha as zerodha_module
 
-        def set_access_token(self, token):
-            self.token = token
+    class FakeKiteService:
+        def __init__(self, db):
+            self.db = db
 
-        def profile(self):
-            return {"status": "success"}
+        def get_profile(self, user):
+            assert user == "alice"
+            return {"status": "success", "data": {"user_id": "KITE123"}}
 
-        def place_order(self, **kwargs):
-            return "KITE123"
+        def place_order(self, user, payload):
+            assert user == "alice"
+            assert payload["tradingsymbol"] == "NIFTY24"
+            assert payload["transaction_type"] == "SELL"
+            return {"status": "success", "data": {"order_id": "KITE123"}, "payload": payload}
 
-    monkeypatch.setitem(sys.modules, "kiteconnect", types.SimpleNamespace(KiteConnect=FakeKite))
+    monkeypatch.setattr(zerodha_module, "KiteService", FakeKiteService)
     fake_db["apis"].insert_one({"user": "alice", "broker": "zerodha", "api_key": "key", "access_token": "token"})
     _enable_live_for(fake_db, "alice", "zerodha")
 

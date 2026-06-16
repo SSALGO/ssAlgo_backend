@@ -18,6 +18,11 @@ class KiteMarketDataService:
         self._ticker = None
         self._connected = False
         self._connection_key = None
+        self._tick_callback = None
+
+    def set_tick_callback(self, callback):
+        with self._lock:
+            self._tick_callback = callback
 
     def connect(self, api_key, access_token, *, threaded=True):
         connection_key = f"{api_key}:{str(access_token or '')[:8]}"
@@ -106,6 +111,9 @@ class KiteMarketDataService:
         }
         with self._lock:
             self._ticks[int(token)] = row
+            callback = self._tick_callback
+        if callback:
+            callback(row)
         return row
 
     def get_latest_tick(self, instrument_token):

@@ -1,7 +1,19 @@
+import os
+import time
+
 from app.api.legacy_compat.common import *
+from app.core.config import AppConfig
 from app.core.trading_debug import trading_event
 from app.domain.brokers.health import BrokerHealthService
+from app.domain.market_data import MarketFeedManager, MarketPriceRepository
 from app.workers.control import WorkerControlService
+
+
+def _strategy_symbols(strategy):
+    symbols = strategy.get("symbol") or strategy.get("symbol[]") or []
+    if isinstance(symbols, str):
+        symbols = [symbols]
+    return sorted({str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()})
 
 
 def api_strategys(_admin=Depends(require_admin)):
@@ -195,13 +207,46 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
         selected_health = broker_health_service.get_health(
             username, selected_broker
         )
+        strategy_symbols = _strategy_symbols(strategy)
+        price_repository = MarketPriceRepository(db)
+        feed_result = MarketFeedManager(db).ensure_symbols(
+            strategy_symbols,
+            user=username,
+            broker=selected_broker,
+        )
+        feed_health = price_repository.get_global_health()
+        feed_provider = (
+            feed_health.get("active_provider")
+            or AppConfig.MARKET_FEED_PROVIDER
+        )
+        price_status = price_repository.has_fresh_prices(
+            strategy_symbols,
+            provider=feed_provider,
+        )
+        if not price_status.get("ready") and feed_result.get("success"):
+            deadline = time.monotonic() + float(os.getenv("SSLAGO_MARKET_FEED_WARMUP_SECONDS", "3"))
+            while time.monotonic() < deadline:
+                time.sleep(0.2)
+                price_status = price_repository.has_fresh_prices(
+                    strategy_symbols,
+                    provider=feed_provider,
+                )
+                if price_status.get("ready"):
+                    break
         live_blockers = []
         if selected_broker == "paper":
             live_blockers.append("Select a live broker")
         if selected_health.get("login_status") != "connected":
             live_blockers.append("Broker login is not connected")
-        if selected_health.get("websocket_status") != "connected":
-            live_blockers.append("Broker market-data websocket is not connected")
+        if feed_health.get("status") != "connected" and feed_health.get("connected") is not True:
+            live_blockers.append("Market feed is not connected")
+        if not price_status.get("ready"):
+            missing = ", ".join(price_status.get("missing") or [])
+            stale = ", ".join(price_status.get("stale") or [])
+            if missing:
+                live_blockers.append(f"Market feed price missing for {missing}")
+            if stale:
+                live_blockers.append(f"Market feed price stale for {stale}")
         if live_blockers:
             trading_event(
                 "strategy_start_rejected",
@@ -211,6 +256,9 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
                 reason="live_broker_not_ready",
                 broker=selected_broker,
                 broker_health=selected_health,
+                market_feed_result=feed_result,
+                market_feed_health=feed_health,
+                market_price_status=price_status,
                 blockers=live_blockers,
             )
             raise HTTPException(

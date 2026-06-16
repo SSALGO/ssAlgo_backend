@@ -4,6 +4,7 @@ import time
 from app.api.legacy_compat.common import *
 from app.domain.brokers.health import BrokerHealthService
 from app.workers.control import WorkerControlService
+from connectors.contracts import contract_file_path
 
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ async def api_searchsymbol(request: Request, query: str = Query("", min_length=0
     results = []
     seen = set()
     for filename in ("NSE_symbols.txt", "NFO_symbols.txt", "BSE_symbols.txt", "BFO_symbols.txt", "MCX_symbols.txt", "CDS_symbols.txt"):
-        path = BACKEND_ROOT / filename
+        path = contract_file_path(filename)
         if not path.exists():
             continue
         with path.open(newline="", encoding="utf-8", errors="ignore") as handle:

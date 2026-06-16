@@ -122,13 +122,6 @@ def test_legacy_connector_loads_kite_redirect_session(monkeypatch, fake_db):
                 "session_data": session_data,
             }
 
-        def _ensure_zerodha_market_data(self, user, api_key, access_token):
-            self.market_data_started = {
-                "user": user,
-                "api_key": api_key,
-                "access_token": access_token,
-            }
-
     exchange = TestExchange.__new__(TestExchange)
 
     user, kite, session = exchange._login_zerodha({
@@ -151,34 +144,20 @@ def test_legacy_connector_loads_kite_redirect_session(monkeypatch, fake_db):
         "filter_value": "alice",
         "session_data": {"access_token": "same-day-token", "kite_user_id": "KITE123"},
     }
-    assert exchange.market_data_started == {
-        "user": "alice",
-        "api_key": "kite-key",
-        "access_token": "same-day-token",
-    }
+    assert not hasattr(exchange, "market_data_started")
 
 
-def test_legacy_connector_marks_zerodha_websocket_connected(monkeypatch, fake_db):
+def test_legacy_connector_skips_zerodha_websocket_start(fake_db):
     from connectors.connector import Exchange
 
-    calls = []
-
-    def fake_connect(api_key, access_token, threaded=True):
-        calls.append((api_key, access_token, threaded))
-        return {"connected": True, "threaded": threaded}
-
-    monkeypatch.setattr("app.domain.market_data.kite_market_data.connect", fake_connect)
     exchange = Exchange.__new__(Exchange)
     exchange.db = fake_db
 
-    exchange._ensure_zerodha_market_data("alice", "kite-key", "same-day-token")
+    result = exchange._ensure_zerodha_market_data("alice", "kite-key", "same-day-token")
     health = fake_db["broker_health"].find_one({"user": "alice", "broker": "zerodha"})
 
-    assert calls == [("kite-key", "same-day-token", True)]
-    assert health["login_status"] == "connected"
-    assert health["websocket_status"] == "connected"
-    assert health["token_status"] == "connected"
-    assert health["last_error"] == ""
+    assert result == {"success": False, "status": "central_feed_only"}
+    assert health is None
 
 
 def test_kite_market_data_cache_tracks_latest_tick():
@@ -274,7 +253,7 @@ def test_kite_postback_updates_order_log(monkeypatch, fake_db):
     assert row["postbackPayload"]["order_id"] == "KITE123"
 
 
-def test_worker_refresh_subscriptions_starts_kite_websocket(monkeypatch, fake_db):
+def test_worker_refresh_subscriptions_starts_shared_market_feed(monkeypatch, fake_db):
     monkeypatch.setattr("app.domain.brokers.kite.AppConfig.KITE_API_KEY", "kite-key")
     fake_db["broker"].insert_one({"user": "alice", "selectedbroker": "zerodha"})
     fake_db["apis"].insert_one({
@@ -305,13 +284,215 @@ def test_worker_refresh_subscriptions_starts_kite_websocket(monkeypatch, fake_db
         calls["subscribe"].append(list(tokens))
         return list(tokens)
 
-    monkeypatch.setattr("app.workers.trading_worker.kite_market_data.connect", fake_connect)
-    monkeypatch.setattr("app.workers.trading_worker.kite_market_data.subscribe_instruments", fake_subscribe)
+    monkeypatch.setattr("app.domain.market_data.providers.kite_market_data.connect", fake_connect)
+    monkeypatch.setattr("app.domain.market_data.providers.kite_market_data.subscribe_instruments", fake_subscribe)
 
     result = TradingWorker(db=fake_db).refresh_subscriptions(user="alice", broker="zerodha")
-    health = fake_db["broker_health"].find_one({"user": "alice", "broker": "zerodha"})
+    health = fake_db["market_feed_health"].find_one({"provider": "zerodha"})
+    global_health = fake_db["market_feed_health"].find_one({"provider": "__global__"})
 
     assert calls["connect"] == [("kite-key", "same-day-token", True)]
     assert calls["subscribe"] == [[123456]]
     assert result[0]["result"]["status"] == "connected"
-    assert health["websocket_status"] == "connected"
+    assert result[0]["result"]["active_provider"] == "zerodha"
+    assert health["status"] == "connected"
+    assert health["connected"] is True
+    assert global_health["active_provider"] == "zerodha"
+    assert global_health["failed_providers"] == ["upstox", "aliceblue"]
+
+
+def test_market_feed_can_warm_symbols_before_strategy_is_opened(fake_db):
+    from app.domain.market_data.manager import MarketFeedManager
+
+    calls = []
+
+    class WorkingFeed:
+        def __init__(self, db, prices):
+            pass
+
+        def connect(self):
+            calls.append(("connect", None))
+            return {"connected": True}
+
+        def subscribe(self, symbols):
+            calls.append(("subscribe", list(symbols)))
+            return {"instrument_tokens": list(symbols), "missing_symbols": []}
+
+        def disconnect(self):
+            pass
+
+    manager = MarketFeedManager(
+        fake_db,
+        provider="zerodha",
+        provider_classes={"zerodha": WorkingFeed},
+    )
+
+    result = manager.ensure_symbols(["nifty26junfut"], user="alice", broker="aliceblue")
+    global_health = fake_db["market_feed_health"].find_one({"provider": "__global__"})
+
+    assert result["success"] is True
+    assert result["symbols"] == ["NIFTY26JUNFUT"]
+    assert calls == [("connect", None), ("subscribe", ["NIFTY26JUNFUT"])]
+    assert global_health["active_provider"] == "zerodha"
+
+
+def test_market_feed_falls_back_to_aliceblue_when_upstox_fails(fake_db):
+    from app.domain.market_data.manager import MarketFeedManager
+
+    fake_db["strategies"].insert_one({
+        "user": "alice",
+        "status": "opened",
+        "live": True,
+        "symbol": "NIFTY26JUNFUT",
+    })
+    calls = []
+
+    class FailingUpstox:
+        def __init__(self, db, prices):
+            pass
+
+        def connect(self):
+            calls.append("upstox")
+            raise RuntimeError("upstox down")
+
+    class WorkingAlice:
+        def __init__(self, db, prices):
+            pass
+
+        def connect(self):
+            calls.append("aliceblue")
+            return {"connected": True}
+
+        def subscribe(self, symbols):
+            return {"instrument_tokens": sorted(symbols), "missing_symbols": []}
+
+        def disconnect(self):
+            pass
+
+    class NotCalledZerodha:
+        def __init__(self, db, prices):
+            pass
+
+        def connect(self):
+            calls.append("zerodha")
+            raise AssertionError("zerodha should not be reached")
+
+    manager = MarketFeedManager(
+        fake_db,
+        provider_classes={
+            "upstox": FailingUpstox,
+            "aliceblue": WorkingAlice,
+            "zerodha": NotCalledZerodha,
+        },
+    )
+
+    result = manager.refresh_subscriptions()
+    global_health = fake_db["market_feed_health"].find_one({"provider": "__global__"})
+
+    assert calls == ["upstox", "aliceblue"]
+    assert result["active_provider"] == "aliceblue"
+    assert global_health["active_provider"] == "aliceblue"
+    assert global_health["failed_providers"] == ["upstox"]
+
+
+def test_market_feed_uses_primary_upstox_when_available(fake_db):
+    from app.domain.market_data.manager import MarketFeedManager
+
+    fake_db["strategies"].insert_one({
+        "user": "alice",
+        "status": "opened",
+        "live": True,
+        "symbol": "NIFTY26JUNFUT",
+    })
+    calls = []
+
+    class WorkingUpstox:
+        def __init__(self, db, prices):
+            pass
+
+        def connect(self):
+            calls.append("upstox")
+            return {"connected": True}
+
+        def subscribe(self, symbols):
+            return {"instrument_tokens": sorted(symbols), "missing_symbols": []}
+
+        def disconnect(self):
+            pass
+
+    class NotCalledProvider:
+        def __init__(self, db, prices):
+            pass
+
+        def connect(self):
+            raise AssertionError("fallback provider should not be reached")
+
+    manager = MarketFeedManager(
+        fake_db,
+        provider_classes={
+            "upstox": WorkingUpstox,
+            "aliceblue": NotCalledProvider,
+            "zerodha": NotCalledProvider,
+        },
+    )
+
+    result = manager.refresh_subscriptions()
+    global_health = fake_db["market_feed_health"].find_one({"provider": "__global__"})
+
+    assert calls == ["upstox"]
+    assert result["active_provider"] == "upstox"
+    assert global_health["active_provider"] == "upstox"
+    assert global_health["failed_providers"] == []
+
+
+def test_market_feed_marks_disconnected_when_all_providers_fail(fake_db):
+    from app.domain.market_data.manager import MarketFeedManager
+
+    class FailingProvider:
+        def __init__(self, db, prices):
+            pass
+
+        def connect(self):
+            raise RuntimeError("feed down")
+
+    manager = MarketFeedManager(
+        fake_db,
+        provider_classes={
+            "upstox": FailingProvider,
+            "aliceblue": FailingProvider,
+            "zerodha": FailingProvider,
+        },
+    )
+
+    result = manager.refresh_subscriptions()
+    global_health = fake_db["market_feed_health"].find_one({"provider": "__global__"})
+
+    assert result["success"] is False
+    assert result["status"] == "disconnected"
+    assert global_health["status"] == "disconnected"
+    assert global_health["failed_providers"] == ["upstox", "aliceblue", "zerodha"]
+
+
+def test_market_feed_tick_is_written_to_market_prices(fake_db):
+    from app.domain.market_data.manager import MarketFeedManager
+
+    fake_db["kite_instruments"].insert_one({
+        "tradingsymbol": "NIFTY26JUNFUT",
+        "exchange": "NFO",
+        "instrument_token": 123456,
+    })
+    manager = MarketFeedManager(fake_db, provider="zerodha")
+
+    row = manager.on_kite_tick({
+        "instrument_token": 123456,
+        "last_price": 24100.25,
+        "depth": {
+            "buy": [{"price": 24100.0}],
+            "sell": [{"price": 24100.5}],
+        },
+    })
+    saved = fake_db["market_prices"].find_one({"symbol": "NIFTY26JUNFUT", "provider": "zerodha"})
+
+    assert row["ltp"] == 24100.25
+    assert saved["bid"] == 24100.0
+    assert saved["ask"] == 24100.5

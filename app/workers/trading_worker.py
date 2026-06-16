@@ -5,11 +5,10 @@ import time
 
 from app.core.trading_debug import trading_event, trading_exception
 from app.domain.brokers.adapters import BrokerAdapterFactory, BrokerCredentials, BrokerOrder
-from app.domain.brokers.kite import KiteService
 from app.domain.brokers.health import BrokerHealthService
 from app.domain.brokers.registry import normalize_broker_id
 from app.domain.audit.service import AuditLogService
-from app.domain.market_data import kite_market_data
+from app.domain.market_data import MarketFeedManager
 from app.domain.orders.lifecycle import OrderLifecycleService
 from app.domain.risk.service import RiskControlService
 from app.workers.control import WorkerControlService
@@ -35,6 +34,7 @@ class TradingWorker:
         self.health_service = health_service or (BrokerHealthService(db) if db is not None else None)
         self.order_lifecycle = OrderLifecycleService(db, audit_service=self.audit) if db is not None else None
         self.risk_service = RiskControlService(db)
+        self.market_feed = MarketFeedManager(db) if db is not None else None
         self.adapter_factory = BrokerAdapterFactory(
             db=db,
             health_service=self.health_service,
@@ -146,110 +146,23 @@ class TradingWorker:
             symbols_by_user_broker.setdefault(key, set()).update(str(symbol).strip() for symbol in symbols if str(symbol).strip())
         return symbols_by_user_broker
 
-    def _kite_instrument_tokens(self, symbols):
-        tokens = []
-        missing = []
-        if self.db is None:
-            return tokens, list(symbols or [])
-        for symbol in symbols or []:
-            symbol_text = str(symbol or "").strip().upper()
-            if not symbol_text:
-                continue
-            row = (
-                self.db["kite_instruments"].find_one({"tradingsymbol": symbol_text})
-                or self.db["kite_instruments"].find_one({"tradingsymbol": symbol_text, "exchange": "NFO"})
-                or self.db["kite_instruments"].find_one({"tradingsymbol": symbol_text, "exchange": "NSE"})
-            )
-            if row and row.get("instrument_token"):
-                tokens.append(int(row["instrument_token"]))
-            else:
-                missing.append(symbol_text)
-        return sorted(set(tokens)), missing
-
-    def _refresh_zerodha_subscription(self, user, symbols):
-        service = KiteService(self.db)
-        access_token = service.access_token(user)
-        tokens, missing_symbols = self._kite_instrument_tokens(symbols)
-        connect_result = kite_market_data.connect(
-            service.api_key,
-            access_token,
-            threaded=True,
-        )
-        subscribed = kite_market_data.subscribe_instruments(tokens) if tokens else []
-        result = {
-            "success": True,
-            "broker": "zerodha",
-            "status": "connected",
-            "message": "Kite websocket connected",
-            "symbols": sorted(symbols or []),
-            "instrument_tokens": subscribed,
-            "missing_symbols": missing_symbols,
-            "connect_result": connect_result,
-        }
-        if missing_symbols:
-            result["message"] = "Kite websocket connected; some symbols are missing instrument tokens"
-        trading_event(
-            "kite_worker_websocket_subscription",
-            user=user,
-            broker="zerodha",
-            symbols=sorted(symbols or []),
-            instrument_tokens=subscribed,
-            missing_symbols=missing_symbols,
-            result=result,
-            force=True,
-        )
-        return result
-
     def refresh_subscriptions(self, user=None, broker=None):
-        results = []
-        target_user = user
-        target_broker = normalize_broker_id(broker) if broker else broker
-        for (strategy_user, strategy_broker), symbols in self._active_strategy_symbols().items():
-            if target_user and target_user != strategy_user:
-                continue
-            strategy_broker = normalize_broker_id(strategy_broker)
-            if target_broker and target_broker != strategy_broker:
-                continue
-            try:
-                normalized_broker = normalize_broker_id(strategy_broker)
-                if normalized_broker == "zerodha":
-                    result = self._refresh_zerodha_subscription(strategy_user, symbols)
-                else:
-                    adapter = self.adapter_factory.create(strategy_broker)
-                    adapter.login(BrokerCredentials(user=strategy_user, broker=strategy_broker))
-                    result = adapter.subscribe(sorted(symbols), user=strategy_user)
-                trading_event(
-                    "market_subscription_result",
-                    user=strategy_user,
-                    broker=normalized_broker,
-                    symbols=sorted(symbols),
-                    result=result,
-                )
-                if self.health_service:
-                    self.health_service.update_health(
-                        strategy_user,
-                        normalized_broker,
-                        websocket_status="connected" if result.get("success") else result.get("status", "unsupported"),
-                        last_error="" if result.get("success") else result.get("message", ""),
-                    )
-                results.append({"user": strategy_user, "broker": normalized_broker, "symbols": sorted(symbols), "result": result})
-            except Exception as exc:
-                trading_exception(
-                    "market_subscription_error",
-                    exc,
-                    user=strategy_user,
-                    broker=strategy_broker,
-                    symbols=sorted(symbols),
-                )
-                if self.health_service:
-                    self.health_service.update_health(
-                        strategy_user,
-                        strategy_broker,
-                        websocket_status="disconnected",
-                        last_error=str(exc),
-                    )
-                results.append({"user": strategy_user, "broker": strategy_broker, "symbols": sorted(symbols), "error": str(exc)})
-        return results
+        if self.market_feed is None:
+            return []
+        try:
+            result = self.market_feed.refresh_subscriptions(user=user, broker=broker)
+            trading_event(
+                "market_subscription_result",
+                user=user,
+                broker=broker,
+                provider=result.get("provider"),
+                symbols=result.get("symbols", []),
+                result=result,
+            )
+            return [{"provider": result.get("provider"), "symbols": result.get("symbols", []), "result": result}]
+        except Exception as exc:
+            trading_exception("market_subscription_error", exc, user=user, broker=broker)
+            return [{"user": user, "broker": broker, "error": str(exc)}]
 
     def _strategy_job_collection(self):
         return self.db["strategy_jobs"] if self.db is not None else None
@@ -318,6 +231,13 @@ class TradingWorker:
                 if not broker:
                     broker_row = self.db["broker"].find_one({"user": job.get("user")}) or {}
                     broker = broker_row.get("selectedbroker") or "paper"
+                elif mode != "paper":
+                    broker_row = self.db["broker"].find_one({"user": job.get("user")}) or {}
+                    selected_broker = broker_row.get("selectedbroker") or broker_row.get("selected_broker") or "paper"
+                    if normalize_broker_id(broker) != normalize_broker_id(selected_broker):
+                        raise RuntimeError(
+                            f"Order broker {broker} does not match selected broker {selected_broker}"
+                        )
                 order = BrokerOrder(
                     user=job["user"],
                     broker=broker,
@@ -332,7 +252,7 @@ class TradingWorker:
                     metadata={**dict(job.get("metadata") or {}), **dict(job), "job_id": job.get("_id")},
                 )
                 trading_event(
-                    "order_payload_ready",
+                    "broker_order_route_selected",
                     job_id=job.get("_id"),
                     user=order.user,
                     broker=broker,

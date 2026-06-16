@@ -2,6 +2,8 @@ import contextlib
 import datetime
 import io
 
+import requests
+
 from app.domain.brokers.aliceblue_auth import (
     aliceblue_error_message,
     classify_aliceblue_error,
@@ -52,6 +54,10 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
         "SL-M": "SLM",
         "SLM": "SLM",
     }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.session_id = None
 
     @staticmethod
     def _session_value(response):
@@ -188,6 +194,7 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             )
             normalized["profile_check"] = profile_result
             if normalized["success"]:
+                self.session_id = session_value
                 self._save_session(
                     credentials.user,
                     session_value,
@@ -223,7 +230,7 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
         }
 
     @staticmethod
-    def _sdk_place_order_payload(request_payload):
+    def _place_order_payload(request_payload):
         return [{
             "instrumentId": request_payload.get("instrumentId"),
             "exchange": request_payload.get("exchange"),
@@ -240,14 +247,58 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             "validity": request_payload.get("validity"),
             "disclosedQuantity": request_payload.get("disclosedQuantity"),
             "marketProtectionPercent": request_payload.get("marketProtectionPercent"),
+            "deviceId": request_payload.get("deviceId"),
             "apiOrderSource": request_payload.get("apiOrderSource"),
             "algoId": request_payload.get("algoId"),
             "orderTag": request_payload.get("orderTag"),
         }]
 
+    def _resolve_session_token(self):
+        token = str(self.session_id or "").strip()
+        if token:
+            return token
+        for key in ("user_session", "sessionID", "session_id", "sessionid", "userSession"):
+            token = str(self.credentials.get(key) or "").strip()
+            if token:
+                self.session_id = token
+                return token
+        return ""
+
+    def _post_place_order(self, payload):
+        session_token = self._resolve_session_token()
+        if not session_token:
+            raise RuntimeError("AliceBlue session token missing for order placement")
+        response = requests.post(
+            self.ORDER_PLACE_URL,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {session_token}",
+            },
+            json=payload,
+            timeout=15,
+        )
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"AliceBlue placeorder returned non-JSON response: "
+                f"http_status={response.status_code}, body={response.text[:200]!r}"
+            ) from exc
+        if response.status_code >= 400:
+            if isinstance(body, dict):
+                body.setdefault("http_status", response.status_code)
+                return body
+            return {
+                "status": "Not_ok",
+                "message": f"AliceBlue placeorder failed: http_status={response.status_code}",
+                "raw": body,
+            }
+        return body
+
     def place_order(self, order):
         self.check_risk(order, mode="live")
-        client = self.client_or_login(order.user)
+        self.client_or_login(order.user)
         metadata = dict(order.metadata or {})
         order_type = self.ORDER_TYPE_MAP.get(str(order.order_type or "MARKET").upper(), str(order.order_type or "MARKET").upper())
         product = self.PRODUCT_MAP.get(str(order.product_type or metadata.get("product") or "LONGTERM").upper(), order.product_type or "LONGTERM")
@@ -265,6 +316,7 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             "trailingSlAmount": metadata.get("trailingSlAmount") or metadata.get("trailing_sl") or "",
             "disclosedQuantity": metadata.get("disclosedQuantity") or "",
             "marketProtectionPercent": metadata.get("marketProtectionPercent") or "",
+            "deviceId": metadata.get("deviceId") or metadata.get("device_id") or "",
             "apiOrderSource": metadata.get("apiOrderSource") or "",
             "algoId": metadata.get("algoId") or "",
             "orderTag": metadata.get("orderTag") or "ssalgo",
@@ -297,7 +349,7 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             process="normalized_trading_worker",
             force=True,
         )
-        final_payload = self._sdk_place_order_payload(request_payload)
+        final_payload = self._place_order_payload(request_payload)
         timestamp = datetime.datetime.now(datetime.UTC).isoformat()
         trading_event(
             "aliceblue_order_final_request",
@@ -313,7 +365,7 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             hostname=network_identity.get("hostname"),
             public_ip=network_identity.get("public_ip"),
             timestamp=timestamp,
-            sdk_payload_missing_deviceId=True,
+            order_transport="rest_api",
             force=True,
         )
         log_aliceblue_diagnostic(
@@ -343,7 +395,7 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             safe_header_keys=self.ORDER_PLACE_SAFE_HEADER_KEYS,
             final_payload=final_payload,
             timestamp=timestamp,
-            sdk_payload_missing_deviceId=True,
+            order_transport="rest_api",
             hostname=network_identity.get("hostname"),
             public_ip=network_identity.get("public_ip"),
             expected_public_ip=network_identity.get("expected_public_ip"),
@@ -351,7 +403,7 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             public_ip_error=network_identity.get("public_ip_error"),
         )
         try:
-            response = client.placeOrder(**request_payload)
+            response = self._post_place_order(final_payload)
             trading_event(
                 "aliceblue_order_client_response",
                 user=order.user,
@@ -367,6 +419,7 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
                 safe_header_keys=self.ORDER_PLACE_SAFE_HEADER_KEYS,
                 final_payload=final_payload,
                 response_payload=response,
+                order_transport="rest_api",
                 hostname=network_identity.get("hostname"),
                 public_ip=network_identity.get("public_ip"),
                 expected_public_ip=network_identity.get("expected_public_ip"),

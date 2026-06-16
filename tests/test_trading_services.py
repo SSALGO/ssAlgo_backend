@@ -219,6 +219,154 @@ def test_aliceblue_login_automatically_replaces_unauthorized_session(monkeypatch
     assert decrypt_secret(saved["user_session"]) == "fresh-session"
 
 
+def test_aliceblue_normalized_order_uses_rest_placeorder(monkeypatch, fake_db):
+    class FakeTradeHub:
+        def __init__(self, **_kwargs):
+            pass
+
+        def get_session_id(self, session_id=None):
+            return {"sessionID": session_id or "fresh-session"}
+
+        def get_profile(self):
+            return {"status": "Ok", "result": [{"userId": "AB123"}]}
+
+        def placeOrder(self, **_kwargs):
+            raise AssertionError("SDK placeOrder should not be used")
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "status": "Ok",
+                "message": "Success",
+                "result": [{"brokerOrderId": "250526000002697"}],
+            }
+
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append({
+            "url": url,
+            "headers": headers,
+            "json": json,
+            "timeout": timeout,
+        })
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        "app.domain.brokers.adapters.aliceblue.load_trade_hub",
+        lambda: FakeTradeHub,
+    )
+    monkeypatch.setattr(
+        "app.domain.brokers.adapters.aliceblue.requests.post",
+        fake_post,
+    )
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "aliceblue",
+        "apikey": "AB123",
+        "apisecret": "secret",
+        "auth_code": "auth",
+    })
+    adapter = AliceBlueBrokerAdapter(db=fake_db, order_lifecycle=OrderLifecycleService(fake_db))
+    adapter.login(BrokerCredentials(user="alice", broker="aliceblue"))
+
+    result = adapter.place_order(BrokerOrder(
+        user="alice",
+        broker="aliceblue",
+        symbol="NIFTY16JUN26C23600",
+        side="BUY",
+        quantity=130,
+        exchange="NFO",
+        product_type="NRML",
+        order_type="LIMIT",
+        price=183.65,
+        metadata={
+            "instrumentId": "12345",
+            "exchange": "NFO",
+            "deviceId": "ssalgo-worker",
+        },
+    ))
+
+    assert result["success"] is True
+    assert result["broker_order_id"] == "250526000002697"
+    assert calls[0]["url"].endswith("/open-api/od/v1/orders/placeorder")
+    assert calls[0]["headers"]["Authorization"] == "Bearer fresh-session"
+    assert calls[0]["json"] == [{
+        "instrumentId": "12345",
+        "exchange": "NFO",
+        "transactionType": "BUY",
+        "quantity": 130,
+        "orderComplexity": "REGULAR",
+        "product": "NORMAL",
+        "orderType": "LIMIT",
+        "price": 183.65,
+        "slTriggerPrice": "",
+        "slLegPrice": "",
+        "trailingSlAmount": "",
+        "targetLegPrice": "",
+        "validity": "DAY",
+        "disclosedQuantity": "",
+        "marketProtectionPercent": "",
+        "deviceId": "ssalgo-worker",
+        "apiOrderSource": "",
+        "algoId": "",
+        "orderTag": "ssalgo",
+    }]
+
+
+def test_aliceblue_legacy_order_uses_rest_placeorder(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "status": "Ok",
+                "message": "Success",
+                "result": [{"brokerOrderId": "250526000002698"}],
+            }
+
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append({
+            "url": url,
+            "headers": headers,
+            "json": json,
+            "timeout": timeout,
+        })
+        return FakeResponse()
+
+    monkeypatch.setattr("connectors.connector.requests.post", fake_post)
+    adapter = AliceBlueTradeHubAdapter.__new__(AliceBlueTradeHubAdapter)
+    adapter.user_id = "AB123"
+    adapter.auth_code = "auth"
+    adapter.secret_key = "secret"
+    adapter.session_id = "legacy-session"
+    adapter.trade = object()
+
+    result = adapter.place_order(
+        transaction_type="BUY",
+        instrument={"token": "12345", "exchange": "NFO"},
+        quantity=130,
+        order_type="L",
+        product_type="NRML",
+        price=183.65,
+        order_tag="ssalgo",
+        deviceId="ssalgo-worker",
+    )
+
+    assert result["status"] == "Ok"
+    assert calls[0]["url"].endswith("/open-api/od/v1/orders/placeorder")
+    assert calls[0]["headers"]["Authorization"] == "Bearer legacy-session"
+    assert calls[0]["json"][0]["product"] == "NORMAL"
+    assert calls[0]["json"][0]["orderType"] == "LIMIT"
+    assert calls[0]["json"][0]["deviceId"] == "ssalgo-worker"
+
+
 def test_aliceblue_saved_session_does_not_require_daily_browser_login(fake_db):
     exchange = Exchange.__new__(Exchange)
     exchange.apis_collection = fake_db["apis"]

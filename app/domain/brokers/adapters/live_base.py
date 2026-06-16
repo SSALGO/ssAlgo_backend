@@ -14,6 +14,8 @@ class NormalizedLiveBrokerAdapter(BrokerAdapter):
         "norenordno",
         "id",
         "data",
+        "brokerOrderId",
+        "broker_order_id",
         "UniqueOrderID",
         "uniqueorderid",
     )
@@ -58,6 +60,16 @@ class NormalizedLiveBrokerAdapter(BrokerAdapter):
             for key in self.ORDER_ID_KEYS:
                 if not broker_order_id and response.get(key):
                     broker_order_id = response.get(key)
+            result = response.get("result")
+            if not broker_order_id and isinstance(result, list) and result:
+                first_result = result[0]
+                if isinstance(first_result, dict):
+                    broker_order_id = (
+                        first_result.get("brokerOrderId")
+                        or first_result.get("broker_order_id")
+                        or first_result.get("orderId")
+                        or first_result.get("order_id")
+                    )
         elif response is False or response is None:
             success = False
             status = "rejected"

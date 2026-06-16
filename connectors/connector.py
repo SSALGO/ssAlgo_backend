@@ -597,28 +597,39 @@ class AliceBlueTradeHubAdapter:
             trailing_sl=trailing_sl,
             is_amo=is_amo,
             order_tag=order_tag,
+            **kwargs,
         )[0]
 
-        return self.trade.placeOrder(
-            transactionType=payload['transactionType'],
-            quantity=payload['quantity'],
-            orderComplexity=payload['orderComplexity'],
-            product=payload['product'],
-            orderType=payload['orderType'],
-            price=payload['price'],
-            slTriggerPrice=payload['slTriggerPrice'],
-            slLegPrice=payload['slLegPrice'],
-            targetLegPrice=payload['targetLegPrice'],
-            validity=payload['validity'],
-            trailingSlAmount=payload['trailingSlAmount'],
-            disclosedQuantity=payload['disclosedQuantity'],
-            marketProtectionPercent=payload['marketProtectionPercent'],
-            apiOrderSource=payload['apiOrderSource'],
-            algoId=payload['algoId'],
-            orderTag=payload['orderTag'],
-            instrumentId=payload['instrumentId'],
-            exchange=payload['exchange'],
+        session_token = self._resolve_session_token()
+        if not session_token:
+            return {
+                'status': 'Not_ok',
+                'message': 'AliceBlue session token missing for order placement',
+            }
+        response = requests.post(
+            self.ORDER_PLACE_URL,
+            headers={
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {session_token}',
+            },
+            json=[payload],
+            timeout=15,
         )
+        try:
+            result = response.json()
+        except ValueError:
+            result = {
+                'status': 'Not_ok',
+                'message': (
+                    f'AliceBlue placeorder returned non-JSON response '
+                    f'({response.status_code})'
+                ),
+                'raw': response.text[:200],
+            }
+        if response.status_code >= 400 and isinstance(result, dict):
+            result.setdefault('http_status', response.status_code)
+        return result
 
     def build_place_order_payload(
         self, transaction_type, instrument, quantity, order_type, product_type,
@@ -663,6 +674,7 @@ class AliceBlueTradeHubAdapter:
             'validity': 'DAY',
             'disclosedQuantity': '',
             'marketProtectionPercent': '',
+            'deviceId': kwargs.get('deviceId') or kwargs.get('device_id') or '',
             'apiOrderSource': '',
             'algoId': '',
             'orderTag': order_tag or '',
@@ -10217,7 +10229,7 @@ class Exchange:
             hostname=network_identity.get("hostname"),
             public_ip=network_identity.get("public_ip"),
             timestamp=order_timestamp,
-            sdk_payload_missing_deviceId=True,
+            order_transport="rest_api",
             force=True,
         )
         log_aliceblue_diagnostic(
@@ -10251,7 +10263,7 @@ class Exchange:
             safe_header_keys=safe_header_keys,
             final_payload=final_payload,
             timestamp=order_timestamp,
-            sdk_payload_missing_deviceId=True,
+            order_transport="rest_api",
             hostname=network_identity.get("hostname"),
             public_ip=network_identity.get("public_ip"),
             expected_public_ip=network_identity.get("expected_public_ip"),
@@ -10301,6 +10313,7 @@ class Exchange:
             safe_header_keys=safe_header_keys,
             final_payload=final_payload,
             response_payload=ret,
+            order_transport="rest_api",
             hostname=network_identity.get("hostname"),
             public_ip=network_identity.get("public_ip"),
             expected_public_ip=network_identity.get("expected_public_ip"),

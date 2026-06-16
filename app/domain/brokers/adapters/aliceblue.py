@@ -7,6 +7,7 @@ from app.domain.brokers.aliceblue_auth import (
     classify_aliceblue_error,
 )
 from app.core.config import AppConfig
+from app.core.network_identity import outbound_identity
 from app.domain.brokers.diagnostics import log_aliceblue_diagnostic
 from app.core.secrets import encrypt_secret
 from app.core.trading_debug import trading_event, trading_exception
@@ -29,6 +30,8 @@ def load_trade_hub():
 
 class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
     broker_name = "aliceblue"
+    ORDER_PLACE_URL = "https://a3.aliceblueonline.com/open-api/od/v1/orders/placeorder"
+    ORDER_PLACE_SAFE_HEADER_KEYS = ["Authorization", "Content-Type", "Accept"]
 
     PRODUCT_MAP = {
         "MIS": "INTRADAY",
@@ -206,6 +209,29 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             "exchange": metadata.get("exchange") or metadata.get("exch"),
         }
 
+    @staticmethod
+    def _sdk_place_order_payload(request_payload):
+        return [{
+            "instrumentId": request_payload.get("instrumentId"),
+            "exchange": request_payload.get("exchange"),
+            "transactionType": request_payload.get("transactionType"),
+            "quantity": request_payload.get("quantity"),
+            "orderComplexity": request_payload.get("orderComplexity"),
+            "product": request_payload.get("product"),
+            "orderType": request_payload.get("orderType"),
+            "price": request_payload.get("price"),
+            "slTriggerPrice": request_payload.get("slTriggerPrice"),
+            "slLegPrice": request_payload.get("slLegPrice"),
+            "trailingSlAmount": request_payload.get("trailingSlAmount"),
+            "targetLegPrice": request_payload.get("targetLegPrice"),
+            "validity": request_payload.get("validity"),
+            "disclosedQuantity": request_payload.get("disclosedQuantity"),
+            "marketProtectionPercent": request_payload.get("marketProtectionPercent"),
+            "apiOrderSource": request_payload.get("apiOrderSource"),
+            "algoId": request_payload.get("algoId"),
+            "orderTag": request_payload.get("orderTag"),
+        }]
+
     def place_order(self, order):
         self.check_risk(order, mode="live")
         client = self.client_or_login(order.user)
@@ -220,7 +246,14 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             "orderType": order_type,
             "price": "" if order_type == "MARKET" else order.price or 0,
             "slTriggerPrice": metadata.get("trigger_price") or "",
+            "slLegPrice": metadata.get("slLegPrice") or metadata.get("stop_loss") or "",
+            "targetLegPrice": metadata.get("targetLegPrice") or metadata.get("square_off") or "",
             "validity": metadata.get("validity") or "DAY",
+            "trailingSlAmount": metadata.get("trailingSlAmount") or metadata.get("trailing_sl") or "",
+            "disclosedQuantity": metadata.get("disclosedQuantity") or "",
+            "marketProtectionPercent": metadata.get("marketProtectionPercent") or "",
+            "apiOrderSource": metadata.get("apiOrderSource") or "",
+            "algoId": metadata.get("algoId") or "",
             "orderTag": metadata.get("orderTag") or "ssalgo",
             **self._instrument_kwargs(metadata),
         }
@@ -234,6 +267,42 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             quantity=order.quantity,
             payload=request_payload,
         )
+        network_identity = outbound_identity()
+        trading_event(
+            "aliceblue_order_outbound_ip",
+            user=order.user,
+            broker=self.broker_name,
+            strategy_id=order.strategy_id,
+            symbol=order.symbol,
+            action=order.side,
+            exchange=order.exchange or metadata.get("exchange") or metadata.get("exch"),
+            hostname=network_identity.get("hostname"),
+            public_ip=network_identity.get("public_ip"),
+            expected_public_ip=network_identity.get("expected_public_ip"),
+            matches_expected_public_ip=network_identity.get("matches_expected_public_ip"),
+            public_ip_error=network_identity.get("public_ip_error"),
+            process="normalized_trading_worker",
+            force=True,
+        )
+        final_payload = self._sdk_place_order_payload(request_payload)
+        timestamp = datetime.datetime.now(datetime.UTC).isoformat()
+        trading_event(
+            "aliceblue_order_final_request",
+            user=order.user,
+            broker=self.broker_name,
+            strategy_id=order.strategy_id,
+            symbol=order.symbol,
+            action=order.side,
+            clientId=self.credentials.get("apikey"),
+            final_url=self.ORDER_PLACE_URL,
+            safe_header_keys=self.ORDER_PLACE_SAFE_HEADER_KEYS,
+            final_payload=final_payload,
+            hostname=network_identity.get("hostname"),
+            public_ip=network_identity.get("public_ip"),
+            timestamp=timestamp,
+            sdk_payload_missing_deviceId=True,
+            force=True,
+        )
         log_aliceblue_diagnostic(
             "aliceblue_order_request",
             user=order.user,
@@ -245,6 +314,28 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             price=request_payload.get("price"),
             order_type=order_type,
             request_payload=request_payload,
+            hostname=network_identity.get("hostname"),
+            public_ip=network_identity.get("public_ip"),
+            expected_public_ip=network_identity.get("expected_public_ip"),
+            matches_expected_public_ip=network_identity.get("matches_expected_public_ip"),
+            public_ip_error=network_identity.get("public_ip_error"),
+        )
+        log_aliceblue_diagnostic(
+            "aliceblue_order_final_request",
+            user=order.user,
+            account_id=self.credentials.get("apikey"),
+            strategy_id=order.strategy_id,
+            symbol=order.symbol,
+            final_url=self.ORDER_PLACE_URL,
+            safe_header_keys=self.ORDER_PLACE_SAFE_HEADER_KEYS,
+            final_payload=final_payload,
+            timestamp=timestamp,
+            sdk_payload_missing_deviceId=True,
+            hostname=network_identity.get("hostname"),
+            public_ip=network_identity.get("public_ip"),
+            expected_public_ip=network_identity.get("expected_public_ip"),
+            matches_expected_public_ip=network_identity.get("matches_expected_public_ip"),
+            public_ip_error=network_identity.get("public_ip_error"),
         )
         try:
             response = client.placeOrder(**request_payload)

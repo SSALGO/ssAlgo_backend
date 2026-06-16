@@ -32,6 +32,7 @@ import typing
 import requests
 
 from app.core.config import AppConfig
+from app.core.network_identity import outbound_identity
 from app.core.trading_debug import trading_event, trading_exception
 from app.core.secrets import decrypt_secret, decrypt_secret_fields, encrypt_secret
 from app.domain.brokers.aliceblue_auth import (
@@ -204,6 +205,8 @@ class ProductType(enum.Enum):
 class AliceBlueTradeHubAdapter:
     """Compatibility wrapper for the Ant-A3 SDK used by existing order flows."""
     BASE_URL = 'https://a3.aliceblueonline.com'
+    ORDER_PLACE_URL = f'{BASE_URL}/open-api/od/v1/orders/placeorder'
+    ORDER_PLACE_SAFE_HEADER_KEYS = ['Authorization', 'Content-Type', 'Accept']
 
     ORDER_TYPE_MAP = {
         'MKT': 'MARKET',
@@ -581,6 +584,47 @@ class AliceBlueTradeHubAdapter:
         price=0.0, trigger_price=None, stop_loss=None, square_off=None,
         trailing_sl=None, is_amo=False, order_tag=None, **kwargs
     ):
+        payload = self.build_place_order_payload(
+            transaction_type=transaction_type,
+            instrument=instrument,
+            quantity=quantity,
+            order_type=order_type,
+            product_type=product_type,
+            price=price,
+            trigger_price=trigger_price,
+            stop_loss=stop_loss,
+            square_off=square_off,
+            trailing_sl=trailing_sl,
+            is_amo=is_amo,
+            order_tag=order_tag,
+        )[0]
+
+        return self.trade.placeOrder(
+            transactionType=payload['transactionType'],
+            quantity=payload['quantity'],
+            orderComplexity=payload['orderComplexity'],
+            product=payload['product'],
+            orderType=payload['orderType'],
+            price=payload['price'],
+            slTriggerPrice=payload['slTriggerPrice'],
+            slLegPrice=payload['slLegPrice'],
+            targetLegPrice=payload['targetLegPrice'],
+            validity=payload['validity'],
+            trailingSlAmount=payload['trailingSlAmount'],
+            disclosedQuantity=payload['disclosedQuantity'],
+            marketProtectionPercent=payload['marketProtectionPercent'],
+            apiOrderSource=payload['apiOrderSource'],
+            algoId=payload['algoId'],
+            orderTag=payload['orderTag'],
+            instrumentId=payload['instrumentId'],
+            exchange=payload['exchange'],
+        )
+
+    def build_place_order_payload(
+        self, transaction_type, instrument, quantity, order_type, product_type,
+        price=0.0, trigger_price=None, stop_loss=None, square_off=None,
+        trailing_sl=None, is_amo=False, order_tag=None, **kwargs
+    ):
         transaction_type = self._enum_value(transaction_type)
         order_type = self.ORDER_TYPE_MAP.get(str(self._enum_value(order_type)).upper(), self._enum_value(order_type))
         product_type = self.PRODUCT_TYPE_MAP.get(str(self._enum_value(product_type)).upper(), self._enum_value(product_type))
@@ -603,25 +647,26 @@ class AliceBlueTradeHubAdapter:
         if order_type == 'MARKET':
             price = ''
 
-        return self.trade.placeOrder(
-            transactionType=transaction_type,
-            quantity=quantity,
-            orderComplexity=order_complexity,
-            product=product_type,
-            orderType=order_type,
-            price=self._blank_if_none(price),
-            slTriggerPrice=self._blank_if_none(trigger_price),
-            slLegPrice=self._blank_if_none(stop_loss),
-            targetLegPrice=self._blank_if_none(square_off),
-            validity='DAY',
-            trailingSlAmount=self._blank_if_none(trailing_sl),
-            disclosedQuantity='',
-            marketProtectionPercent='',
-            apiOrderSource='',
-            algoId='',
-            orderTag=order_tag or '',
-            **instrument_kwargs
-        )
+        return [{
+            'instrumentId': instrument_kwargs.get('instrumentId'),
+            'exchange': instrument_kwargs.get('exchange'),
+            'transactionType': transaction_type,
+            'quantity': quantity,
+            'orderComplexity': order_complexity,
+            'product': product_type,
+            'orderType': order_type,
+            'price': self._blank_if_none(price),
+            'slTriggerPrice': self._blank_if_none(trigger_price),
+            'slLegPrice': self._blank_if_none(stop_loss),
+            'trailingSlAmount': self._blank_if_none(trailing_sl),
+            'targetLegPrice': self._blank_if_none(square_off),
+            'validity': 'DAY',
+            'disclosedQuantity': '',
+            'marketProtectionPercent': '',
+            'apiOrderSource': '',
+            'algoId': '',
+            'orderTag': order_tag or '',
+        }]
 
 class ShoonyaApiPy(NorenApi):
     def __init__(self):
@@ -10138,6 +10183,43 @@ class Exchange:
             f"ask={(price_context or {}).get('ask')}, "
             f"ltp={(price_context or {}).get('ltp')}"
         )
+        network_identity = outbound_identity()
+        final_payload = self.alice[user].build_place_order_payload(**order_kwargs)
+        final_url = self.alice[user].ORDER_PLACE_URL
+        safe_header_keys = self.alice[user].ORDER_PLACE_SAFE_HEADER_KEYS
+        order_timestamp = datetime.datetime.now(datetime.UTC).isoformat()
+        trading_event(
+            "aliceblue_order_outbound_ip",
+            user=user,
+            broker="aliceblue",
+            symbol=symbol,
+            action=side,
+            exchange=exch,
+            optiontoken=optiontoken,
+            hostname=network_identity.get("hostname"),
+            public_ip=network_identity.get("public_ip"),
+            expected_public_ip=network_identity.get("expected_public_ip"),
+            matches_expected_public_ip=network_identity.get("matches_expected_public_ip"),
+            public_ip_error=network_identity.get("public_ip_error"),
+            process="legacy_strategy_worker",
+            force=True,
+        )
+        trading_event(
+            "aliceblue_order_final_request",
+            user=user,
+            broker="aliceblue",
+            symbol=symbol,
+            action=side,
+            clientId=getattr(self.alice[user], "user_id", None),
+            final_url=final_url,
+            safe_header_keys=safe_header_keys,
+            final_payload=final_payload,
+            hostname=network_identity.get("hostname"),
+            public_ip=network_identity.get("public_ip"),
+            timestamp=order_timestamp,
+            sdk_payload_missing_deviceId=True,
+            force=True,
+        )
         log_aliceblue_diagnostic(
             "aliceblue_legacy_order_request",
             user=user,
@@ -10151,6 +10233,30 @@ class Exchange:
             product_type=product_type,
             request_payload=order_kwargs,
             price_context=price_context,
+            hostname=network_identity.get("hostname"),
+            public_ip=network_identity.get("public_ip"),
+            expected_public_ip=network_identity.get("expected_public_ip"),
+            matches_expected_public_ip=network_identity.get("matches_expected_public_ip"),
+            public_ip_error=network_identity.get("public_ip_error"),
+        )
+        log_aliceblue_diagnostic(
+            "aliceblue_legacy_order_final_request",
+            user=user,
+            symbol=symbol,
+            exchange=exch,
+            optiontoken=optiontoken,
+            side=side,
+            clientId=getattr(self.alice[user], "user_id", None),
+            final_url=final_url,
+            safe_header_keys=safe_header_keys,
+            final_payload=final_payload,
+            timestamp=order_timestamp,
+            sdk_payload_missing_deviceId=True,
+            hostname=network_identity.get("hostname"),
+            public_ip=network_identity.get("public_ip"),
+            expected_public_ip=network_identity.get("expected_public_ip"),
+            matches_expected_public_ip=network_identity.get("matches_expected_public_ip"),
+            public_ip_error=network_identity.get("public_ip_error"),
         )
         ret = self.alice[user].place_order(**order_kwargs)
         log_aliceblue_diagnostic(

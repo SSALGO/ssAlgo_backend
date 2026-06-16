@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from app.core.config import AppConfig
 from app.core.database import get_database
 from app.core.logging_config import configure_logging
+from app.core.network_identity import outbound_identity
 from app.core.trading_debug import configure_trading_debug_logging, trading_event
 from app.domain.brokers.health import BrokerHealthService
 from app.workers.trading_worker import TradingWorker
@@ -106,6 +107,17 @@ def main():
         "MongoDB ping succeeded: host=%s database=%s shared_runtime_database=true",
         mongo_identity["host"],
         mongo_identity["database"],
+    )
+    worker_network_identity = outbound_identity()
+    trading_event(
+        "trading_worker_outbound_ip",
+        hostname=worker_network_identity.get("hostname"),
+        public_ip=worker_network_identity.get("public_ip"),
+        expected_public_ip=worker_network_identity.get("expected_public_ip"),
+        matches_expected_public_ip=worker_network_identity.get("matches_expected_public_ip"),
+        public_ip_error=worker_network_identity.get("public_ip_error"),
+        process="trading_worker_main",
+        force=True,
     )
     _log_position_recovery_state(db)
     worker = TradingWorker(db=db, health_service=BrokerHealthService(db))

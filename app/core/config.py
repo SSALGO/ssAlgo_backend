@@ -55,6 +55,9 @@ class AppConfig:
     ALICEBLUE_APP_CODE = os.getenv('SSLAGO_ALICEBLUE_APP_CODE') or os.getenv('ALICEBLUE_APP_CODE', '')
     ALICEBLUE_APP_SECRET = os.getenv('SSLAGO_ALICEBLUE_APP_SECRET') or os.getenv('ALICEBLUE_APP_SECRET', '')
     ALICEBLUE_CALLBACK_URL = os.getenv('SSLAGO_ALICEBLUE_CALLBACK_URL', '')
+    KITE_API_KEY = os.getenv('SSLAGO_KITE_API_KEY') or os.getenv('KITE_API_KEY', '')
+    KITE_API_SECRET = os.getenv('SSLAGO_KITE_API_SECRET') or os.getenv('KITE_API_SECRET', '')
+    KITE_REDIRECT_URL = os.getenv('SSLAGO_KITE_REDIRECT_URL') or os.getenv('KITE_REDIRECT_URL', '')
     FRONTEND_BROKER_CALLBACK_URL = os.getenv(
         'SSLAGO_FRONTEND_BROKER_CALLBACK_URL',
         'http://localhost:5173/broker-setup',

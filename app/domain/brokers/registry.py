@@ -1,11 +1,6 @@
 BROKER_REQUIREMENTS = {
     'paper': [],
     'zerodha': [
-        {'id': 'user_id', 'label': 'User ID', 'type': 'text'},
-        {'id': 'password', 'label': 'Password', 'type': 'password', 'toggle_function': 'toggleZerodhaPassword'},
-        {'id': 'totp_key', 'label': 'TOTP Key', 'type': 'text'},
-        {'id': 'api_key', 'label': 'API Key', 'type': 'text'},
-        {'id': 'api_secret', 'label': 'API Secret', 'type': 'text'},
     ],
     'fyers': [
         {'id': 'fy_id', 'label': 'FY User ID', 'type': 'text'},
@@ -70,7 +65,7 @@ BROKER_DISPLAY_NAMES = {
     'mstock': 'mStock',
     'shoonya': 'Shoonya',
     'smc': 'SMC',
-    'zerodha': 'Zerodha',
+    'zerodha': 'Zerodha Kite',
 }
 
 BROKER_ACTIONS = {
@@ -90,7 +85,7 @@ BROKER_STATUS = {
     'mstock': {'enabled': True, 'status': 'wired', 'notes': 'Login and order placement branches exist; email OTP flow needs production hardening.'},
     'shoonya': {'enabled': True, 'status': 'wired', 'notes': 'Login and order placement branches exist; import-time login was disabled.'},
     'smc': {'enabled': True, 'status': 'wired', 'notes': 'Login and order placement branches exist; dependency availability must be verified.'},
-    'zerodha': {'enabled': True, 'status': 'wired', 'notes': 'Login and order placement branches exist; automated login may be fragile.'},
+    'zerodha': {'enabled': True, 'status': 'redirect_auth', 'notes': 'Connect through Kite redirect login. Server-side order placement uses encrypted daily access tokens.'},
     'delta_exchange_india': {'enabled': False, 'status': 'coming_soon', 'notes': 'Visible for roadmap only. No login/order adapter exists yet.'},
 }
 
@@ -98,6 +93,7 @@ BROKER_ALIASES = {
     'delta': 'delta_exchange_india',
     'alice': 'aliceblue',
     'angel': 'angelone',
+    'kite': 'zerodha',
 }
 
 

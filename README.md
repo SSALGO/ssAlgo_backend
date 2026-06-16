@@ -99,3 +99,36 @@ Set these before production startup:
 - `SSLAGO_RAZORPAY_KEY_SECRET`
 
 Live trading remains blocked unless explicitly enabled through both environment and user risk settings.
+
+## Zerodha Kite Setup
+
+Set these Kite Connect values on the backend server only. Do not expose the API
+secret to the frontend.
+
+```bash
+export SSLAGO_KITE_API_KEY=your_kite_api_key
+export SSLAGO_KITE_API_SECRET=your_kite_api_secret
+export SSLAGO_KITE_REDIRECT_URL=https://YOUR_DOMAIN/api/brokers/kite/callback
+```
+
+The backend also accepts `KITE_API_KEY`, `KITE_API_SECRET`, and
+`KITE_REDIRECT_URL` as aliases.
+
+Configure the same redirect URL in the Zerodha Kite Developer Console. For live
+order placement, whitelist the backend server Elastic IP/static public IP in
+the Kite Developer Console. Orders must be sent by the backend API or trading
+worker; the frontend should only request login URLs, show broker status, and
+start/stop strategies.
+
+Kite access tokens are valid for the trading day. If `tokenDate` is not today's
+date, the backend marks the broker token as expired and rejects live orders with
+`Kite session expired. Please reconnect Kite.`
+
+Daily instrument sync:
+
+```bash
+.\venv\Scripts\python.exe scripts\sync_kite_instruments.py
+```
+
+Run this before market open from your scheduler/cron so strategies can resolve
+`exchange + tradingsymbol` to Kite `instrument_token`.

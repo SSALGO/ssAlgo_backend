@@ -19,6 +19,7 @@ from app.api.fastapi_schemas import (
     BacktestRequest,
     BrokerCredentialRevealRequest,
     BrokerCredentialsRequest,
+    KiteOrderRequest,
     LoginRequest,
     OrderTransitionRequest,
     PaperOrderRequest,
@@ -39,7 +40,9 @@ from app.domain.brokers.aliceblue_auth import (
     parse_aliceblue_callback,
 )
 from app.domain.brokers.health import SECRET_FIELD_NAMES
+from app.domain.brokers.kite import KiteError, KiteService, KiteTokenExpired
 from app.domain.brokers.registry import broker_lookup_ids, broker_payload, normalize_broker_id
+from app.domain.risk.service import RiskControlService
 from app.domain.reconciliation.service import BrokerReconciliationService
 from app.realtime.dashboard import DashboardConnectionManager
 from app.workers.control import WorkerControlService
@@ -99,6 +102,67 @@ def _aliceblue_callback_url(request):
     if configured:
         return configured
     return str(request.url_for("aliceblue_callback"))
+
+
+def _kite_callback_url(request):
+    configured = str(AppConfig.KITE_REDIRECT_URL or "").strip()
+    if configured:
+        return configured
+    return str(request.url_for("kite_callback"))
+
+
+def _create_broker_state(db, user_name, broker):
+    state = secrets.token_urlsafe(32)
+    now = datetime.datetime.utcnow()
+    expires_at = now + datetime.timedelta(minutes=15)
+    db["broker_oauth_states"].create_index("expires_at", expireAfterSeconds=0)
+    db["broker_oauth_states"].create_index([("state", 1)], unique=True)
+    db["broker_oauth_states"].insert_one(
+        {
+            "state": state,
+            "user": user_name,
+            "broker": broker,
+            "created_at": now,
+            "expires_at": expires_at,
+            "used": False,
+        }
+    )
+    return state, expires_at
+
+
+def _log_kite_order_rejection(db, user_name, reason, order_payload, risk=None):
+    now = datetime.datetime.utcnow()
+    db["order_logs"].insert_one(
+        {
+            "userId": user_name,
+            "user": user_name,
+            "broker": "zerodha",
+            "strategyId": order_payload.get("strategy_id"),
+            "signalId": order_payload.get("signal_id"),
+            "requestPayload": order_payload,
+            "brokerResponse": None,
+            "orderId": None,
+            "status": "rejected",
+            "failureReason": reason,
+            "placedAt": now,
+            "updatedAt": now,
+            "latencyMs": 0,
+            "ipAddress": "",
+            "retryCount": 0,
+            "source": order_payload.get("source") or "MANUAL",
+            "risk": risk or {},
+        }
+    )
+    trading_event(
+        "kite_order_rejected",
+        broker="zerodha",
+        user=user_name,
+        strategy_id=order_payload.get("strategy_id"),
+        signal_id=order_payload.get("signal_id"),
+        reason=reason,
+        source=order_payload.get("source") or "MANUAL",
+        force=True,
+    )
 
 
 @auth_router.post("/login", response_model=ApiResponse)
@@ -225,6 +289,225 @@ def aliceblue_connect_url(
             "expires_at": expires_at.isoformat(),
         },
     )
+
+
+@broker_router.get("/kite/login-url", response_model=ApiResponse)
+def kite_login_url(
+    request: Request,
+    response: Response,
+    user=Depends(get_current_user),
+):
+    db = get_database()
+    state_value, expires_at = _create_broker_state(db, username(user), "zerodha")
+    service = KiteService(db)
+    try:
+        login_url = service.generate_login_url(state=state_value)
+    except KiteError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    response.set_cookie(
+        "sslago_kite_state",
+        state_value,
+        max_age=15 * 60,
+        httponly=True,
+        secure=str(request.url.scheme).lower() == "https",
+        samesite="lax",
+    )
+    callback_url = _kite_callback_url(request)
+    AuditLogService(db).record(
+        "kite_login_url_created",
+        user=username(user),
+        resource_type="broker_api",
+        resource_id="zerodha",
+        details={"callback_url": callback_url},
+    )
+    return ApiResponse(
+        success=True,
+        message="Kite login URL generated",
+        data={
+            "broker": "zerodha",
+            "loginUrl": login_url,
+            "login_url": login_url,
+            "callback_url": callback_url,
+            "expires_at": expires_at.isoformat(),
+        },
+    )
+
+
+@broker_router.get("/kite/callback", name="kite_callback")
+def kite_callback(request: Request):
+    db = get_database()
+    status_value = str(request.query_params.get("status") or "").lower()
+    request_token = str(request.query_params.get("request_token") or "").strip()
+    if status_value and status_value != "success":
+        return _broker_frontend_redirect("failed", "Kite login was not successful", broker="zerodha")
+    if not request_token:
+        return _broker_frontend_redirect("failed", "Kite request_token missing", broker="zerodha")
+
+    state_value = (
+        request.cookies.get("sslago_kite_state")
+        or request.query_params.get("state")
+        or ""
+    )
+    now = datetime.datetime.utcnow()
+    state_doc = db["broker_oauth_states"].find_one(
+        {
+            "state": state_value,
+            "broker": "zerodha",
+            "used": False,
+            "expires_at": {"$gte": now},
+        }
+    )
+    if not state_doc:
+        AuditLogService(db).record(
+            "kite_connect_failed",
+            resource_type="broker_api",
+            resource_id="zerodha",
+            status="failure",
+            details={"reason": "invalid_or_expired_state"},
+        )
+        return _broker_frontend_redirect("failed", "Kite callback state expired", broker="zerodha")
+
+    user_name = state_doc["user"]
+    db["broker_oauth_states"].update_one(
+        {"_id": state_doc["_id"]},
+        {"$set": {"used": True, "used_at": now}},
+    )
+    service = KiteService(db)
+    try:
+        session = service.generate_session(request_token)
+        saved = service.save_session(user_name, session)
+    except KiteError as exc:
+        db["apis"].update_one(
+            {"user": user_name, "broker": "zerodha"},
+            {"$set": {"connectionStatus": "failed", "token_status": "reconnect_required", "lastError": str(exc), "updatedAt": now}},
+            upsert=True,
+        )
+        db["broker_health"].update_one(
+            {"user": user_name, "broker": "zerodha"},
+            {"$set": {"login_status": "rejected", "token_status": "reconnect_required", "last_error": str(exc), "updated_at": now}},
+            upsert=True,
+        )
+        AuditLogService(db).record(
+            "kite_connect_failed",
+            user=user_name,
+            resource_type="broker_api",
+            resource_id="zerodha",
+            status="failure",
+            details={"reason": str(exc)},
+        )
+        return _broker_frontend_redirect("failed", str(exc), broker="zerodha")
+
+    trading_event(
+        "kite_session_saved",
+        broker="zerodha",
+        user=user_name,
+        kite_user_id=saved.get("kiteUserId"),
+        token_status=saved.get("token_status"),
+        force=True,
+    )
+    AuditLogService(db).record(
+        "kite_connected",
+        user=user_name,
+        resource_type="broker_api",
+        resource_id="zerodha",
+        details={"kite_user_id": saved.get("kiteUserId")},
+    )
+    return _broker_frontend_redirect("connected", "Kite connected", broker="zerodha")
+
+
+@broker_router.get("/kite/profile", response_model=ApiResponse)
+def kite_profile(user=Depends(get_current_user)):
+    try:
+        data = KiteService(get_database()).get_profile(username(user))
+    except KiteTokenExpired as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+    return ApiResponse(success=data.get("status") != "error", message=data.get("message") or "Kite profile fetched", data=data)
+
+
+@broker_router.get("/kite/margins", response_model=ApiResponse)
+def kite_margins(user=Depends(get_current_user)):
+    try:
+        data = KiteService(get_database()).get_margins(username(user))
+    except KiteTokenExpired as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+    return ApiResponse(success=data.get("status") != "error", message=data.get("message") or "Kite margins fetched", data=data)
+
+
+@broker_router.post("/kite/disconnect", response_model=ApiResponse)
+def kite_disconnect(user=Depends(get_current_user)):
+    db = get_database()
+    KiteService(db).disconnect(username(user))
+    AuditLogService(db).record(
+        "kite_disconnected",
+        user=username(user),
+        resource_type="broker_api",
+        resource_id="zerodha",
+    )
+    return ApiResponse(success=True, message="Kite disconnected", data={"broker": "zerodha"})
+
+
+@broker_router.post("/kite/place-order", response_model=ApiResponse)
+def kite_place_order(payload: KiteOrderRequest, user=Depends(get_current_user)):
+    db = get_database()
+    user_name = username(user)
+    order_payload = payload.model_dump()
+    if not order_payload.get("idempotency_key"):
+        if order_payload.get("source") == "STRATEGY":
+            reason = "Strategy Kite orders require an idempotency_key"
+            _log_kite_order_rejection(db, user_name, reason, order_payload)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+        order_payload["idempotency_key"] = (
+            "manual-kite-"
+            f"{user_name}-"
+            f"{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}-"
+            f"{secrets.token_hex(4)}"
+        )
+    strategy_id = str(order_payload.get("strategy_id") or "").strip()
+    if order_payload.get("source") == "STRATEGY":
+        strategy = db["strategies"].find_one({"user": user_name, "botcode": strategy_id}) if strategy_id else None
+        if not strategy or strategy.get("status") != "opened":
+            reason = "Strategy order rejected: strategy is not active"
+            _log_kite_order_rejection(db, user_name, reason, order_payload)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+
+    duplicate_query = {
+        "user": user_name,
+        "broker": "zerodha",
+        "strategyId": strategy_id,
+        "signalId": order_payload.get("signal_id"),
+        "status": {"$ne": "rejected"},
+    }
+    if strategy_id and order_payload.get("signal_id") and db["order_logs"].count_documents(duplicate_query, limit=1):
+        reason = "Duplicate Kite order blocked"
+        _log_kite_order_rejection(db, user_name, reason, order_payload)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=reason)
+
+    broker_order = BrokerOrder(
+        user=user_name,
+        broker="zerodha",
+        symbol=order_payload["tradingsymbol"],
+        side=order_payload["transaction_type"],
+        quantity=order_payload["quantity"],
+        exchange=order_payload["exchange"],
+        product_type=order_payload["product"],
+        order_type=order_payload["order_type"],
+        price=order_payload.get("price"),
+        strategy_id=strategy_id or None,
+        metadata=order_payload,
+    )
+    risk = RiskControlService(db).check_order(broker_order, mode="live")
+    if not risk.allowed:
+        _log_kite_order_rejection(db, user_name, risk.reason, order_payload, risk=risk.to_dict())
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=risk.reason)
+    try:
+        data = KiteService(db).place_order(user_name, order_payload)
+    except KiteTokenExpired as exc:
+        _log_kite_order_rejection(db, user_name, str(exc), order_payload)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+    except KiteError as exc:
+        _log_kite_order_rejection(db, user_name, str(exc), order_payload)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    return ApiResponse(success=data.get("status") != "error", message=data.get("message") or "Kite order submitted", data=data)
 
 
 @broker_router.api_route("/aliceblue/callback", methods=["GET", "POST"], name="aliceblue_callback")

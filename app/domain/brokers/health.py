@@ -18,6 +18,8 @@ SECRET_FIELD_NAMES = {
     "totp_key",
     "factor2",
     "access_token",
+    "accessTokenEncrypted",
+    "refreshTokenEncrypted",
     "auth_code",
     "interactive_secret",
     "epassword",

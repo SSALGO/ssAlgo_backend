@@ -67,6 +67,59 @@ class PaperOrderRequest(BaseModel):
         return value
 
 
+class KiteOrderRequest(BaseModel):
+    exchange: str = Field(default="NFO", min_length=1)
+    tradingsymbol: str = Field(min_length=1)
+    transaction_type: str = Field(default="BUY")
+    quantity: int = Field(ge=1)
+    product: str = "MIS"
+    order_type: str = "MARKET"
+    variety: str = "regular"
+    validity: str = "DAY"
+    price: Optional[float] = None
+    trigger_price: Optional[float] = None
+    strategy_id: Optional[str] = None
+    signal_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    source: str = "MANUAL"
+
+    @field_validator(
+        "exchange",
+        "tradingsymbol",
+        "transaction_type",
+        "product",
+        "order_type",
+        "variety",
+        "validity",
+        "source",
+        mode="before",
+    )
+    @classmethod
+    def normalize_text(cls, value):
+        return str(value or "").strip().upper()
+
+    @field_validator("transaction_type")
+    @classmethod
+    def validate_transaction_type(cls, value):
+        if value not in {"BUY", "SELL"}:
+            raise ValueError("transaction_type must be BUY or SELL")
+        return value
+
+    @field_validator("order_type")
+    @classmethod
+    def validate_order_type(cls, value):
+        if value not in {"MARKET", "LIMIT", "SL", "SL-M"}:
+            raise ValueError("unsupported order type")
+        return value
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, value):
+        if value not in {"MANUAL", "STRATEGY"}:
+            raise ValueError("source must be MANUAL or STRATEGY")
+        return value
+
+
 class WorkerOrderRequest(PaperOrderRequest):
     user: str = Field(min_length=1)
     broker: str = ""

@@ -16,6 +16,7 @@ from app.domain.brokers.aliceblue_auth import (
     AliceBlueDirectAuthenticator,
 )
 from app.domain.brokers.health import BrokerHealthService
+from app.domain.brokers.kite import KiteService, KiteTokenExpired
 from app.domain.audit.service import AuditLogService
 from app.domain.orders.lifecycle import OrderLifecycleService
 from app.domain.readiness.service import LiveReadinessService
@@ -116,6 +117,51 @@ def test_aliceblue_sdk_mappings_match_ant_a3_values():
     assert AliceBlueTradeHubAdapter.PRODUCT_TYPE_MAP["NORMAL"] == "NORMAL"
     assert AliceBlueTradeHubAdapter.PRODUCT_TYPE_MAP["CNC"] == "LONGTERM"
     assert AliceBlueTradeHubAdapter.ORDER_TYPE_MAP["SL-M"] == "SLM"
+
+
+def test_kite_login_url_uses_configured_api_key(monkeypatch, fake_db):
+    monkeypatch.setattr("app.domain.brokers.kite.AppConfig.KITE_API_KEY", "kite-key")
+    monkeypatch.setattr("app.domain.brokers.kite.AppConfig.KITE_API_SECRET", "kite-secret")
+
+    login_url = KiteService(fake_db).generate_login_url()
+
+    assert login_url == "https://kite.zerodha.com/connect/login?v=3&api_key=kite-key"
+
+
+def test_kite_session_is_saved_encrypted(monkeypatch, fake_db):
+    monkeypatch.setattr("app.domain.brokers.kite.AppConfig.KITE_API_KEY", "kite-key")
+    monkeypatch.setattr("app.domain.brokers.kite.AppConfig.KITE_API_SECRET", "kite-secret")
+    session = {
+        "access_token": "secret-access-token",
+        "public_token": "public-token",
+        "user_id": "AB1234",
+    }
+
+    saved = KiteService(fake_db).save_session("alice", session)
+    row = fake_db["apis"].find_one({"user": "alice", "broker": "zerodha"})
+
+    assert saved["kiteUserId"] == "AB1234"
+    assert row["accessTokenEncrypted"] != "secret-access-token"
+    assert decrypt_secret(row["accessTokenEncrypted"]) == "secret-access-token"
+    assert fake_db["broker"].find_one({"user": "alice"})["selectedbroker"] == "zerodha"
+    assert fake_db["broker_health"].find_one({"user": "alice", "broker": "zerodha"})["token_status"] == "connected"
+
+
+def test_kite_expired_token_is_blocked(monkeypatch, fake_db):
+    monkeypatch.setattr("app.domain.brokers.kite.AppConfig.KITE_API_KEY", "kite-key")
+    monkeypatch.setattr("app.domain.brokers.kite.AppConfig.KITE_API_SECRET", "kite-secret")
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "zerodha",
+        "accessTokenEncrypted": encrypt_secret("old-token"),
+        "tokenDate": "2026-06-15",
+    })
+
+    with pytest.raises(KiteTokenExpired):
+        KiteService(fake_db).access_token("alice")
+
+    row = fake_db["apis"].find_one({"user": "alice", "broker": "zerodha"})
+    assert row["connectionStatus"] == "token_expired"
 
 
 def test_aliceblue_sdk_import_reports_nested_missing_dependency(monkeypatch):

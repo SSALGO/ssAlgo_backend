@@ -3,6 +3,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
+from app.core.trading_debug import trading_event
 from app.domain.brokers.diagnostics import (
     log_aliceblue_diagnostic,
     response_summary,
@@ -103,6 +104,13 @@ def exchange_auth_code_for_session(user_id, auth_code, app_secret, http=None, ti
     response = None
     body = None
     try:
+        trading_event(
+            "aliceblue_session_exchange_request",
+            broker="aliceblue",
+            url=ALICEBLUE_SESSION_URL,
+            user_id=user_id,
+            force=True,
+        )
         log_aliceblue_diagnostic(
             "aliceblue_session_exchange_request",
             url=ALICEBLUE_SESSION_URL,
@@ -131,19 +139,60 @@ def exchange_auth_code_for_session(user_id, auth_code, app_secret, http=None, ti
                 error=str(exc),
                 **response_summary(response, body),
             )
+            trading_event(
+                "aliceblue_session_exchange_error",
+                broker="aliceblue",
+                user_id=user_id,
+                error=str(exc),
+                **response_summary(response, body),
+                force=True,
+            )
+        else:
+            trading_event(
+                "aliceblue_session_exchange_error",
+                broker="aliceblue",
+                user_id=user_id,
+                error=str(exc),
+                force=True,
+            )
         raise AliceBlueSessionExchangeError(
             f"AliceBlue session exchange failed: {type(exc).__name__}"
         ) from exc
     except ValueError as exc:
+        trading_event(
+            "aliceblue_session_exchange_error",
+            broker="aliceblue",
+            user_id=user_id,
+            error="AliceBlue session exchange returned a non-JSON response",
+            exception_type=type(exc).__name__,
+            **response_summary(response, getattr(response, "text", "") if response is not None else None),
+            force=True,
+        )
         raise AliceBlueSessionExchangeError(
             "AliceBlue session exchange returned a non-JSON response"
         ) from exc
 
     session_id = body.get("userSession") if isinstance(body, dict) else None
     if not session_id:
+        trading_event(
+            "aliceblue_session_exchange_error",
+            broker="aliceblue",
+            user_id=user_id,
+            error="AliceBlue session exchange returned no userSession",
+            **response_summary(response, body),
+            force=True,
+        )
         raise AliceBlueSessionExchangeError(
             "AliceBlue session exchange returned no userSession"
         )
+    trading_event(
+        "aliceblue_session_exchange_success",
+        broker="aliceblue",
+        user_id=user_id,
+        session_returned=True,
+        **response_summary(response, body),
+        force=True,
+    )
     return {
         "user_id": str(user_id).strip(),
         "auth_code": str(auth_code).strip(),

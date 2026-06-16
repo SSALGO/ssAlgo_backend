@@ -29,6 +29,7 @@ SENSITIVE_KEYS = {
     "otp",
     "jwt",
     "bearer",
+    "authorization",
 }
 NORMALIZED_SENSITIVE_KEYS = {
     re.sub(r"[^a-z0-9]", "", name)

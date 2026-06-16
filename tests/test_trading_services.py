@@ -24,7 +24,7 @@ from app.domain.risk.service import RiskControlService
 from app.workers.trading_worker import TradingWorker
 from app.core.logging_config import sanitize_log_value
 from app.core.secrets import decrypt_secret, encrypt_secret
-from connectors.connector import Exchange, strategy_market_window
+from connectors.connector import AliceBlueTradeHubAdapter, Exchange, strategy_market_window
 from models import EMA_fut_mode, EMA_mode, SSTRIKE_mode
 
 
@@ -85,6 +85,18 @@ def test_strategy_market_window_rejects_utc_time_after_india_close():
 
     assert window["market_time"] == datetime.time(15, 30)
     assert window["intraday"] is False
+
+
+def test_aliceblue_sdk_mappings_match_ant_a3_values():
+    assert AliceBlueBrokerAdapter.PRODUCT_MAP["NRML"] == "NORMAL"
+    assert AliceBlueBrokerAdapter.PRODUCT_MAP["NORMAL"] == "NORMAL"
+    assert AliceBlueBrokerAdapter.PRODUCT_MAP["CNC"] == "LONGTERM"
+    assert AliceBlueBrokerAdapter.ORDER_TYPE_MAP["SL-M"] == "SLM"
+
+    assert AliceBlueTradeHubAdapter.PRODUCT_TYPE_MAP["NRML"] == "NORMAL"
+    assert AliceBlueTradeHubAdapter.PRODUCT_TYPE_MAP["NORMAL"] == "NORMAL"
+    assert AliceBlueTradeHubAdapter.PRODUCT_TYPE_MAP["CNC"] == "LONGTERM"
+    assert AliceBlueTradeHubAdapter.ORDER_TYPE_MAP["SL-M"] == "SLM"
 
 
 def test_aliceblue_sdk_import_reports_nested_missing_dependency(monkeypatch):

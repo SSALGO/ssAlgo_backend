@@ -47,6 +47,8 @@ source venv/bin/activate
 export PYTHONUNBUFFERED=1
 export SSLAGO_ENABLE_LEGACY_STRATEGY_ENGINE=true
 export DEBUG_TRADING=true
+export SSLAGO_ALICEBLUE_DIAGNOSTICS=true
+export SSLAGO_EXPECTED_OUTBOUND_IP=3.108.156.143
 python -m app.workers.trading_worker_main
 ```
 
@@ -75,6 +77,15 @@ the investigation because per-strategy decision logs can be verbose.
 
 Logs are written to `logs/trading_debug.log` and also printed in the trading
 worker console. Override the file path with `DEBUG_TRADING_LOG_FILE`.
+
+For AliceBlue EC097/IP-restriction debugging, enable AliceBlue diagnostics and
+set the expected outbound IP before starting the worker:
+
+```bash
+export SSLAGO_ALICEBLUE_DIAGNOSTICS=true
+export SSLAGO_EXPECTED_OUTBOUND_IP=3.108.156.143
+journalctl -u ssalgo-worker -f | grep -E "trading_worker_outbound_ip|aliceblue_session|legacy_broker_login_result|aliceblue_order_final_request|aliceblue_order_client_response|aliceblue_order_client_exception|EC097"
+```
 
 ## Required Production Secrets
 

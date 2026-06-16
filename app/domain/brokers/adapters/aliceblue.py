@@ -37,12 +37,21 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
         "MIS": "INTRADAY",
         "INTRADAY": "INTRADAY",
         "CNC": "LONGTERM",
-        "NRML": "LONGTERM",
+        "NRML": "NORMAL",
+        "NORMAL": "NORMAL",
         "DELIVERY": "LONGTERM",
         "LONGTERM": "LONGTERM",
     }
 
-    ORDER_TYPE_MAP = {"MARKET": "MARKET", "MKT": "MARKET", "LIMIT": "LIMIT", "L": "LIMIT"}
+    ORDER_TYPE_MAP = {
+        "MARKET": "MARKET",
+        "MKT": "MARKET",
+        "LIMIT": "LIMIT",
+        "L": "LIMIT",
+        "SL": "SL",
+        "SL-M": "SLM",
+        "SLM": "SLM",
+    }
 
     @staticmethod
     def _session_value(response):
@@ -179,7 +188,11 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
             )
             normalized["profile_check"] = profile_result
             if normalized["success"]:
-                self._save_session(credentials.user, session_value)
+                self._save_session(
+                    credentials.user,
+                    session_value,
+                    auth_code=auth_code if auth_code else None,
+                )
         else:
             normalized["success"] = False
             normalized["status"] = "rejected"
@@ -339,6 +352,29 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
         )
         try:
             response = client.placeOrder(**request_payload)
+            trading_event(
+                "aliceblue_order_client_response",
+                user=order.user,
+                broker=self.broker_name,
+                strategy_id=order.strategy_id,
+                symbol=order.symbol,
+                exchange=order.exchange or metadata.get("exchange") or metadata.get("exch"),
+                instrumentId=metadata.get("instrumentId") or metadata.get("instrument_id") or metadata.get("token") or metadata.get("optiontoken"),
+                side=order.side,
+                quantity=order.quantity,
+                clientId=self.credentials.get("apikey"),
+                final_url=self.ORDER_PLACE_URL,
+                safe_header_keys=self.ORDER_PLACE_SAFE_HEADER_KEYS,
+                final_payload=final_payload,
+                response_payload=response,
+                hostname=network_identity.get("hostname"),
+                public_ip=network_identity.get("public_ip"),
+                expected_public_ip=network_identity.get("expected_public_ip"),
+                matches_expected_public_ip=network_identity.get("matches_expected_public_ip"),
+                public_ip_error=network_identity.get("public_ip_error"),
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat(),
+                force=True,
+            )
             log_aliceblue_diagnostic(
                 "aliceblue_order_response",
                 user=order.user,
@@ -348,6 +384,30 @@ class AliceBlueBrokerAdapter(NormalizedLiveBrokerAdapter):
                 response_payload=response,
             )
         except Exception as exc:
+            trading_event(
+                "aliceblue_order_client_exception",
+                user=order.user,
+                broker=self.broker_name,
+                strategy_id=order.strategy_id,
+                symbol=order.symbol,
+                exchange=order.exchange or metadata.get("exchange") or metadata.get("exch"),
+                instrumentId=metadata.get("instrumentId") or metadata.get("instrument_id") or metadata.get("token") or metadata.get("optiontoken"),
+                side=order.side,
+                quantity=order.quantity,
+                clientId=self.credentials.get("apikey"),
+                final_url=self.ORDER_PLACE_URL,
+                safe_header_keys=self.ORDER_PLACE_SAFE_HEADER_KEYS,
+                final_payload=final_payload,
+                hostname=network_identity.get("hostname"),
+                public_ip=network_identity.get("public_ip"),
+                expected_public_ip=network_identity.get("expected_public_ip"),
+                matches_expected_public_ip=network_identity.get("matches_expected_public_ip"),
+                public_ip_error=network_identity.get("public_ip_error"),
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat(),
+                exception_type=type(exc).__name__,
+                error=str(exc),
+                force=True,
+            )
             trading_exception(
                 "broker_api_error",
                 exc,

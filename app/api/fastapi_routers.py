@@ -28,6 +28,7 @@ from app.api.fastapi_services import FastAPITradingServices, get_trading_service
 from app.core.config import AppConfig
 from app.core.database import get_database
 from app.core.secrets import decrypt_secret, encrypt_secret, encrypt_secret_fields
+from app.core.trading_debug import trading_event
 from app.domain.audit.service import AuditLogService
 from app.domain.brokers.adapters import BrokerCredentials, BrokerOrder
 from app.domain.brokers.aliceblue_auth import (
@@ -327,7 +328,7 @@ async def aliceblue_callback(request: Request):
         "connected_at": now,
         "last_verified_at": now,
     }
-    db["apis"].update_one(
+    apis_result = db["apis"].update_one(
         {"user": user_name, "broker": "aliceblue"},
         {
             "$set": fields,
@@ -350,7 +351,7 @@ async def aliceblue_callback(request: Request):
         {"$set": {"user": user_name, "selectedbroker": "aliceblue"}},
         upsert=True,
     )
-    db["broker_health"].update_one(
+    health_result = db["broker_health"].update_one(
         {"user": user_name, "broker": "aliceblue"},
         {
             "$set": {
@@ -365,6 +366,22 @@ async def aliceblue_callback(request: Request):
             "$setOnInsert": {"user": user_name, "broker": "aliceblue", "created_at": now},
         },
         upsert=True,
+    )
+    trading_event(
+        "aliceblue_session_saved",
+        broker="aliceblue",
+        user=user_name,
+        alice_client_id=session["user_id"],
+        has_user_session=bool(fields.get("user_session")),
+        has_sessionID=bool(fields.get("sessionID")),
+        token_status=fields.get("token_status"),
+        apis_matched=apis_result.matched_count,
+        apis_modified=apis_result.modified_count,
+        apis_upserted=bool(apis_result.upserted_id),
+        health_matched=health_result.matched_count,
+        health_modified=health_result.modified_count,
+        health_upserted=bool(health_result.upserted_id),
+        force=True,
     )
     AuditLogService(db).record(
         "aliceblue_connected",

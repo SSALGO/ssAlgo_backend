@@ -220,8 +220,8 @@ class AliceBlueTradeHubAdapter:
     PRODUCT_TYPE_MAP = {
         'MIS': 'INTRADAY',
         'CNC': 'LONGTERM',
-        'NRML': 'LONGTERM',
-        'NORMAL': 'LONGTERM',
+        'NRML': 'NORMAL',
+        'NORMAL': 'NORMAL',
         'LONGTERM': 'LONGTERM',
         'DELIVERY': 'LONGTERM',
         'INTRADAY': 'INTRADAY',
@@ -10258,7 +10258,57 @@ class Exchange:
             matches_expected_public_ip=network_identity.get("matches_expected_public_ip"),
             public_ip_error=network_identity.get("public_ip_error"),
         )
-        ret = self.alice[user].place_order(**order_kwargs)
+        try:
+            ret = self.alice[user].place_order(**order_kwargs)
+        except Exception as exc:
+            trading_event(
+                "aliceblue_order_client_exception",
+                user=user,
+                broker="aliceblue",
+                symbol=symbol,
+                exchange=exch,
+                instrumentId=optiontoken,
+                optiontoken=optiontoken,
+                side=side,
+                quantity=quantity,
+                clientId=getattr(self.alice[user], "user_id", None),
+                final_url=final_url,
+                safe_header_keys=safe_header_keys,
+                final_payload=final_payload,
+                hostname=network_identity.get("hostname"),
+                public_ip=network_identity.get("public_ip"),
+                expected_public_ip=network_identity.get("expected_public_ip"),
+                matches_expected_public_ip=network_identity.get("matches_expected_public_ip"),
+                public_ip_error=network_identity.get("public_ip_error"),
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat(),
+                exception_type=type(exc).__name__,
+                error=str(exc),
+                force=True,
+            )
+            raise
+        trading_event(
+            "aliceblue_order_client_response",
+            user=user,
+            broker="aliceblue",
+            symbol=symbol,
+            exchange=exch,
+            instrumentId=optiontoken,
+            optiontoken=optiontoken,
+            side=side,
+            quantity=quantity,
+            clientId=getattr(self.alice[user], "user_id", None),
+            final_url=final_url,
+            safe_header_keys=safe_header_keys,
+            final_payload=final_payload,
+            response_payload=ret,
+            hostname=network_identity.get("hostname"),
+            public_ip=network_identity.get("public_ip"),
+            expected_public_ip=network_identity.get("expected_public_ip"),
+            matches_expected_public_ip=network_identity.get("matches_expected_public_ip"),
+            public_ip_error=network_identity.get("public_ip_error"),
+            timestamp=datetime.datetime.now(datetime.UTC).isoformat(),
+            force=True,
+        )
         log_aliceblue_diagnostic(
             "aliceblue_legacy_order_response",
             user=user,

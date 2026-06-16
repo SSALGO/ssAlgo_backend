@@ -1292,6 +1292,14 @@ class Exchange:
                     self._ensure_aliceblue_market_depth(user_id)
                 except Exception as e:
                     print(f"AliceBlue market depth skipped for {user_id}: {e}")
+            else:
+                trading_event(
+                    "legacy_broker_login_result",
+                    force=True,
+                    user=user_id,
+                    broker=broker_dict,
+                    status="connected",
+                )
         else:
             log_key = f"{broker_dict}:{user_id}:rejected"
             now = time.monotonic()
@@ -1780,7 +1788,46 @@ class Exchange:
             from urllib.parse import urlparse, parse_qs
             
             self._ensure_collection_exists('zerodhaloginsess')
-            kite = KiteConnect(api_key=item['api_key'])
+            api_key = item.get('api_key') or item.get('apiKey') or AppConfig.KITE_API_KEY
+            if not api_key:
+                print(f"Zerodha login skipped for {item.get('user')}: missing api_key")
+                return item['user'], None, None
+
+            encrypted_access_token = item.get('accessTokenEncrypted') or item.get('access_token')
+            if encrypted_access_token:
+                token_date = str(item.get('tokenDate') or item.get('token_date') or '').strip()
+                today = datetime.date.today().isoformat()
+                if token_date and token_date != today:
+                    print(f"Zerodha login skipped for {item.get('user')}: Kite access token expired")
+                    return item['user'], None, None
+
+                access_token = decrypt_secret(encrypted_access_token)
+                if not access_token:
+                    print(f"Zerodha login skipped for {item.get('user')}: missing access token")
+                    return item['user'], None, None
+
+                kite = KiteConnect(api_key=api_key)
+                kite.set_access_token(access_token)
+                self._save_session_to_db(
+                    'zerodhaloginsess',
+                    'user',
+                    item['user'],
+                    {
+                        'access_token': access_token,
+                        'kite_user_id': item.get('kiteUserId') or item.get('user_id') or '',
+                    },
+                )
+                trading_event(
+                    "zerodha_redirect_session_loaded",
+                    force=True,
+                    user=item['user'],
+                    broker="zerodha",
+                    kite_user_id=item.get('kiteUserId') or item.get('user_id') or '',
+                    token_date=token_date or today,
+                )
+                return item['user'], kite, {'access_token': access_token}
+
+            kite = KiteConnect(api_key=api_key)
             session = requests.Session()
             
             login_response = session.post(
@@ -1802,7 +1849,7 @@ class Exchange:
                 return item['user'], None, None
             
             try:
-                api_session = session.get(f"https://kite.trade/connect/login?api_key={item['api_key']}")
+                api_session = session.get(f"https://kite.trade/connect/login?api_key={api_key}")
                 parsed = urlparse(api_session.url)
             except Exception as e:
                 parsed = urlparse(e.request.url)

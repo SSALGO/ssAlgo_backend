@@ -1,5 +1,6 @@
 import datetime
 import asyncio
+import sys
 import types
 
 import pytest
@@ -95,6 +96,54 @@ def test_kite_order_posts_from_backend_with_encrypted_token(monkeypatch, fake_db
     assert http.requests[0]["url"] == "https://api.kite.trade/orders/regular"
     assert http.requests[0]["headers"]["Authorization"] == "token kite-key:same-day-token"
     assert fake_db["order_logs"].find_one({"orderId": "KITE123"})["status"] == "placed"
+
+
+def test_legacy_connector_loads_kite_redirect_session(monkeypatch, fake_db):
+    from connectors.connector import Exchange
+
+    class FakeKite:
+        def __init__(self, api_key):
+            self.api_key = api_key
+            self.access_token = None
+
+        def set_access_token(self, token):
+            self.access_token = token
+
+    monkeypatch.setitem(sys.modules, "kiteconnect", types.SimpleNamespace(KiteConnect=FakeKite))
+    class TestExchange(Exchange):
+        def _ensure_collection_exists(self, collection_name):
+            self.ensured_collection = collection_name
+
+        def _save_session_to_db(self, collection_name, filter_key, filter_value, session_data):
+            self.saved_session = {
+                "collection_name": collection_name,
+                "filter_key": filter_key,
+                "filter_value": filter_value,
+                "session_data": session_data,
+            }
+
+    exchange = TestExchange.__new__(TestExchange)
+
+    user, kite, session = exchange._login_zerodha({
+        "user": "alice",
+        "broker": "zerodha",
+        "apiKey": "kite-key",
+        "kiteUserId": "KITE123",
+        "accessTokenEncrypted": encrypt_secret("same-day-token"),
+        "tokenDate": datetime.date.today().isoformat(),
+    })
+
+    assert user == "alice"
+    assert kite.api_key == "kite-key"
+    assert kite.access_token == "same-day-token"
+    assert session == {"access_token": "same-day-token"}
+    assert exchange.ensured_collection == "zerodhaloginsess"
+    assert exchange.saved_session == {
+        "collection_name": "zerodhaloginsess",
+        "filter_key": "user",
+        "filter_value": "alice",
+        "session_data": {"access_token": "same-day-token", "kite_user_id": "KITE123"},
+    }
 
 
 def test_kite_market_data_cache_tracks_latest_tick():

@@ -12380,25 +12380,34 @@ class Exchange:
             
 
     def get_week_and_month_dates(self, currentdate, date_list):
-        date_list.sort(reverse=False)
-        currentweek = None
-        nextweek = None
-        currentmonth = None
-        nextmonth = None
+        if isinstance(currentdate, datetime.datetime):
+            currentdate = currentdate.date()
+        future_dates = []
+        for value in date_list:
+            if isinstance(value, datetime.datetime):
+                value = value.date()
+            if value >= currentdate:
+                future_dates.append(value)
 
-        # Get dates for the current week
-        currentweek = date_list[0]
-        nextweek = date_list[1]
+        future_dates = sorted(set(future_dates))
+        if not future_dates:
+            raise ValueError(f"No non-expired expiry dates available for {currentdate}")
 
-        duplicatecurrentmonth = [i for i in date_list if i.month == currentweek.month and i.year == currentweek.year]
+        currentweek = future_dates[0]
+        nextweek = future_dates[1] if len(future_dates) > 1 else future_dates[0]
 
-        if duplicatecurrentmonth:
-            currentmonth = duplicatecurrentmonth[-1]
-            next_month_date = currentmonth + relativedelta(months=1)
-            next_month_dates = [i for i in date_list if next_month_date.year == i.year and next_month_date.month == i.month]
+        duplicatecurrentmonth = [
+            i for i in future_dates
+            if i.month == currentweek.month and i.year == currentweek.year
+        ]
+        currentmonth = duplicatecurrentmonth[-1] if duplicatecurrentmonth else currentweek
 
-            if next_month_dates:
-                nextmonth = next_month_dates[-1]
+        next_month_date = currentmonth + relativedelta(months=1)
+        next_month_dates = [
+            i for i in future_dates
+            if next_month_date.year == i.year and next_month_date.month == i.month
+        ]
+        nextmonth = next_month_dates[-1] if next_month_dates else currentmonth
 
         print(currentweek, nextweek, currentmonth, nextmonth)
         return currentweek, nextweek, currentmonth, nextmonth

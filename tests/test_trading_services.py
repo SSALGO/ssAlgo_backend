@@ -87,6 +87,25 @@ def test_strategy_market_window_rejects_utc_time_after_india_close():
     assert window["intraday"] is False
 
 
+def test_expiry_selection_ignores_expired_contract_dates():
+    exchange = Exchange.__new__(Exchange)
+
+    currentweek, nextweek, currentmonth, nextmonth = exchange.get_week_and_month_dates(
+        datetime.date(2026, 6, 16),
+        [
+            datetime.date(2026, 6, 2),
+            datetime.date(2026, 6, 9),
+            datetime.date(2026, 6, 30),
+            datetime.date(2026, 7, 28),
+        ],
+    )
+
+    assert currentweek == datetime.date(2026, 6, 30)
+    assert nextweek == datetime.date(2026, 7, 28)
+    assert currentmonth == datetime.date(2026, 6, 30)
+    assert nextmonth == datetime.date(2026, 7, 28)
+
+
 def test_aliceblue_sdk_mappings_match_ant_a3_values():
     assert AliceBlueBrokerAdapter.PRODUCT_MAP["NRML"] == "NORMAL"
     assert AliceBlueBrokerAdapter.PRODUCT_MAP["NORMAL"] == "NORMAL"

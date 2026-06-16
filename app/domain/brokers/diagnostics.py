@@ -26,12 +26,14 @@ def outbound_public_ip() -> str:
 def log_aliceblue_diagnostic(event: str, **details: Any) -> None:
     if not broker_diagnostics_enabled():
         return
+    sanitized_details = sanitize_log_value(details)
+    sanitized_details.pop("broker", None)
+    sanitized_details.setdefault("public_ip", outbound_public_ip())
     trading_event(
         event,
         force=True,
         broker="aliceblue",
-        public_ip=outbound_public_ip(),
-        **sanitize_log_value(details),
+        **sanitized_details,
     )
 
 

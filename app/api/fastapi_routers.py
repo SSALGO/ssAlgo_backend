@@ -1,6 +1,7 @@
 import bcrypt
 import datetime
 import secrets
+from urllib.parse import urlparse
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import RedirectResponse
@@ -111,10 +112,10 @@ def _kite_callback_url(request):
     return str(request.url_for("kite_callback"))
 
 
-def _create_broker_state(db, user_name, broker):
+def _create_broker_state(db, user_name, broker, frontend_redirect_url=""):
     state = secrets.token_urlsafe(32)
     now = datetime.datetime.utcnow()
-    expires_at = now + datetime.timedelta(minutes=15)
+    expires_at = now + datetime.timedelta(minutes=10)
     db["broker_oauth_states"].create_index("expires_at", expireAfterSeconds=0)
     db["broker_oauth_states"].create_index([("state", 1)], unique=True)
     db["broker_oauth_states"].insert_one(
@@ -124,10 +125,16 @@ def _create_broker_state(db, user_name, broker):
             "broker": broker,
             "created_at": now,
             "expires_at": expires_at,
+            "frontendRedirectUrl": frontend_redirect_url or AppConfig.FRONTEND_BROKER_CALLBACK_URL,
             "used": False,
         }
     )
     return state, expires_at
+
+
+def _login_url_origin(login_url):
+    parsed = urlparse(str(login_url or ""))
+    return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
 
 
 def _log_kite_order_rejection(db, user_name, reason, order_payload, risk=None):
@@ -298,7 +305,14 @@ def kite_login_url(
     user=Depends(get_current_user),
 ):
     db = get_database()
-    state_value, expires_at = _create_broker_state(db, username(user), "zerodha")
+    user_name = username(user)
+    callback_url = _kite_callback_url(request)
+    state_value, expires_at = _create_broker_state(
+        db,
+        user_name,
+        "zerodha",
+        frontend_redirect_url=AppConfig.FRONTEND_BROKER_CALLBACK_URL,
+    )
     service = KiteService(db)
     try:
         login_url = service.generate_login_url(state=state_value)
@@ -307,18 +321,33 @@ def kite_login_url(
     response.set_cookie(
         "sslago_kite_state",
         state_value,
-        max_age=15 * 60,
+        max_age=10 * 60,
         httponly=True,
         secure=str(request.url.scheme).lower() == "https",
         samesite="lax",
     )
-    callback_url = _kite_callback_url(request)
+    trading_event(
+        "kite_login_url_generated",
+        broker="zerodha",
+        user=user_name,
+        state=state_value,
+        state_storage_success=True,
+        ttl_seconds=600,
+        login_url_origin=_login_url_origin(login_url),
+        callback_url=callback_url,
+        force=True,
+    )
     AuditLogService(db).record(
         "kite_login_url_created",
-        user=username(user),
+        user=user_name,
         resource_type="broker_api",
         resource_id="zerodha",
-        details={"callback_url": callback_url},
+        details={
+            "callback_url": callback_url,
+            "state": state_value,
+            "ttl_seconds": 600,
+            "login_url_origin": _login_url_origin(login_url),
+        },
     )
     return ApiResponse(
         success=True,
@@ -338,17 +367,37 @@ def kite_callback(request: Request):
     db = get_database()
     status_value = str(request.query_params.get("status") or "").lower()
     request_token = str(request.query_params.get("request_token") or "").strip()
+    query_state = str(request.query_params.get("state") or "").strip()
+    cookie_state = str(request.cookies.get("sslago_kite_state") or "").strip()
+    state_value = query_state or cookie_state
+    now = datetime.datetime.utcnow()
+    trading_event(
+        "kite_callback_received",
+        broker="zerodha",
+        request_token_present=bool(request_token),
+        state_present=bool(state_value),
+        query_state_present=bool(query_state),
+        cookie_state_present=bool(cookie_state),
+        status=status_value,
+        action=str(request.query_params.get("action") or ""),
+        force=True,
+    )
     if status_value and status_value != "success":
         return _broker_frontend_redirect("failed", "Kite login was not successful", broker="zerodha")
     if not request_token:
         return _broker_frontend_redirect("failed", "Kite request_token missing", broker="zerodha")
+    if not state_value:
+        trading_event(
+            "kite_callback_state_lookup",
+            broker="zerodha",
+            state_present=False,
+            lookup_success=False,
+            state_expired=False,
+            reason="missing_state",
+            force=True,
+        )
+        return _broker_frontend_redirect("failed", "Kite callback state missing", broker="zerodha")
 
-    state_value = (
-        request.cookies.get("sslago_kite_state")
-        or request.query_params.get("state")
-        or ""
-    )
-    now = datetime.datetime.utcnow()
     state_doc = db["broker_oauth_states"].find_one(
         {
             "state": state_value,
@@ -358,16 +407,53 @@ def kite_callback(request: Request):
         }
     )
     if not state_doc:
+        existing_state = db["broker_oauth_states"].find_one(
+            {"state": state_value, "broker": "zerodha"}
+        ) or {}
+        state_expired = bool(existing_state.get("expires_at") and existing_state.get("expires_at") < now)
+        state_used = bool(existing_state.get("used"))
+        reason = (
+            "expired_state"
+            if state_expired
+            else "used_state"
+            if state_used
+            else "state_not_found"
+        )
+        trading_event(
+            "kite_callback_state_lookup",
+            broker="zerodha",
+            state=state_value,
+            lookup_success=False,
+            state_expired=state_expired,
+            state_used=state_used,
+            reason=reason,
+            force=True,
+        )
         AuditLogService(db).record(
             "kite_connect_failed",
             resource_type="broker_api",
             resource_id="zerodha",
             status="failure",
-            details={"reason": "invalid_or_expired_state"},
+            details={
+                "reason": reason,
+                "state_present": True,
+                "query_state_present": bool(query_state),
+                "cookie_state_present": bool(cookie_state),
+            },
         )
         return _broker_frontend_redirect("failed", "Kite callback state expired", broker="zerodha")
 
     user_name = state_doc["user"]
+    trading_event(
+        "kite_callback_state_lookup",
+        broker="zerodha",
+        user=user_name,
+        state=state_value,
+        lookup_success=True,
+        state_expired=False,
+        expires_at=state_doc.get("expires_at").isoformat() if hasattr(state_doc.get("expires_at"), "isoformat") else state_doc.get("expires_at"),
+        force=True,
+    )
     db["broker_oauth_states"].update_one(
         {"_id": state_doc["_id"]},
         {"$set": {"used": True, "used_at": now}},
@@ -395,14 +481,25 @@ def kite_callback(request: Request):
             status="failure",
             details={"reason": str(exc)},
         )
+        trading_event(
+            "kite_session_exchange_failed",
+            broker="zerodha",
+            user=user_name,
+            state=state_value,
+            request_token_present=True,
+            error=str(exc),
+            force=True,
+        )
         return _broker_frontend_redirect("failed", str(exc), broker="zerodha")
 
+    db["broker_oauth_states"].delete_one({"_id": state_doc["_id"]})
     trading_event(
         "kite_session_saved",
         broker="zerodha",
         user=user_name,
         kite_user_id=saved.get("kiteUserId"),
         token_status=saved.get("token_status"),
+        final_redirect_url=AppConfig.FRONTEND_BROKER_CALLBACK_URL,
         force=True,
     )
     AuditLogService(db).record(
@@ -444,6 +541,67 @@ def kite_disconnect(user=Depends(get_current_user)):
         resource_id="zerodha",
     )
     return ApiResponse(success=True, message="Kite disconnected", data={"broker": "zerodha"})
+
+
+@broker_router.post("/kite/postback", response_model=ApiResponse)
+async def kite_postback(request: Request):
+    db = get_database()
+    content_type = request.headers.get("content-type", "")
+    payload = {}
+    try:
+        if "application/json" in content_type:
+            payload = dict(await request.json() or {})
+        else:
+            form = await request.form()
+            payload = dict(form)
+    except Exception:
+        payload = {}
+
+    order_id = str(
+        payload.get("order_id")
+        or payload.get("orderId")
+        or payload.get("exchange_order_id")
+        or ""
+    ).strip()
+    order_status = str(payload.get("status") or payload.get("order_status") or "").strip()
+    now = datetime.datetime.utcnow()
+    update_result = None
+    if order_id:
+        update_result = db["order_logs"].update_one(
+            {"broker": "zerodha", "orderId": order_id},
+            {
+                "$set": {
+                    "postbackPayload": payload,
+                    "postbackStatus": order_status,
+                    "updatedAt": now,
+                }
+            },
+        )
+
+    trading_event(
+        "kite_postback_received",
+        broker="zerodha",
+        order_id=order_id,
+        order_status=order_status,
+        order_log_matched=getattr(update_result, "matched_count", 0) if update_result else 0,
+        force=True,
+    )
+    AuditLogService(db).record(
+        "kite_postback_received",
+        resource_type="broker_order",
+        resource_id=order_id or "unknown",
+        details={
+            "broker": "zerodha",
+            "order_id": order_id,
+            "order_status": order_status,
+            "order_log_matched": getattr(update_result, "matched_count", 0) if update_result else 0,
+        },
+    )
+    return ApiResponse(
+        success=True,
+        message="Kite postback received",
+        data={"order_id": order_id, "status": order_status},
+    )
 
 
 @broker_router.post("/kite/place-order", response_model=ApiResponse)

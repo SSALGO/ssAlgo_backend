@@ -109,16 +109,23 @@ secret to the frontend.
 export SSLAGO_KITE_API_KEY=your_kite_api_key
 export SSLAGO_KITE_API_SECRET=your_kite_api_secret
 export SSLAGO_KITE_REDIRECT_URL=https://YOUR_DOMAIN/api/brokers/kite/callback
+export SSLAGO_KITE_POSTBACK_URL=https://YOUR_DOMAIN/api/brokers/kite/postback
 ```
 
 The backend also accepts `KITE_API_KEY`, `KITE_API_SECRET`, and
-`KITE_REDIRECT_URL` as aliases.
+`KITE_REDIRECT_URL`, and `KITE_POSTBACK_URL` as aliases.
 
-Configure the same redirect URL in the Zerodha Kite Developer Console. For live
-order placement, whitelist the backend server Elastic IP/static public IP in
-the Kite Developer Console. Orders must be sent by the backend API or trading
-worker; the frontend should only request login URLs, show broker status, and
-start/stop strategies.
+Configure these values in the Zerodha Kite Developer Console:
+
+- Redirect URL: `https://YOUR_DOMAIN/api/brokers/kite/callback`
+- Postback URL: `https://YOUR_DOMAIN/api/brokers/kite/postback`
+
+The redirect/callback endpoint is only for login and token exchange. The
+postback endpoint is only for order updates from Zerodha. For live order
+placement, whitelist the backend server Elastic IP/static public IP in the Kite
+Developer Console. Orders must be sent by the backend API or trading worker;
+the frontend should only request login URLs, show broker status, and start/stop
+strategies.
 
 Kite access tokens are valid for the trading day. If `tokenDate` is not today's
 date, the backend marks the broker token as expired and rejects live orders with

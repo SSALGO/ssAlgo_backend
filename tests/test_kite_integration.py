@@ -1,8 +1,11 @@
 import datetime
+import asyncio
+import types
 
 import pytest
 
 from app.core.secrets import encrypt_secret
+from app.api import fastapi_routers
 from app.domain.brokers.kite import KiteService, KiteTokenExpired
 from app.domain.market_data.kite_market_data import KiteMarketDataService
 
@@ -27,7 +30,7 @@ class FakeKiteHttp:
         return FakeKiteResponse(self.response)
 
 
-def test_kite_login_url_can_include_oauth_state(monkeypatch, fake_db):
+def test_kite_login_url_sends_state_through_redirect_params(monkeypatch, fake_db):
     monkeypatch.setattr("app.domain.brokers.kite.AppConfig.KITE_API_KEY", "kite-key")
     monkeypatch.setattr("app.domain.brokers.kite.AppConfig.KITE_API_SECRET", "kite-secret")
 
@@ -35,8 +38,9 @@ def test_kite_login_url_can_include_oauth_state(monkeypatch, fake_db):
 
     assert login_url == (
         "https://kite.zerodha.com/connect/login?"
-        "v=3&api_key=kite-key&state=state-123"
+        "v=3&api_key=kite-key&redirect_params=state%3Dstate-123"
     )
+    assert "&state=" not in login_url
 
 
 def test_kite_order_requires_same_day_token(monkeypatch, fake_db):
@@ -107,3 +111,79 @@ def test_kite_market_data_cache_tracks_latest_tick():
 
     assert saved["instrument_token"] == 256265
     assert service.get_latest_ltp(256265) == 23500.5
+
+
+def test_kite_callback_uses_query_state_before_stale_cookie(monkeypatch, fake_db):
+    now = datetime.datetime.utcnow()
+    fake_db["broker_oauth_states"].insert_one({
+        "state": "valid-query-state",
+        "user": "alice",
+        "broker": "zerodha",
+        "created_at": now,
+        "expires_at": now + datetime.timedelta(minutes=5),
+        "used": False,
+    })
+    fake_db["broker_oauth_states"].insert_one({
+        "state": "stale-cookie-state",
+        "user": "alice",
+        "broker": "zerodha",
+        "created_at": now - datetime.timedelta(minutes=20),
+        "expires_at": now - datetime.timedelta(minutes=10),
+        "used": False,
+    })
+    monkeypatch.setattr(fastapi_routers, "get_database", lambda: fake_db)
+    monkeypatch.setattr(
+        fastapi_routers.KiteService,
+        "generate_session",
+        lambda self, request_token: {"access_token": "fresh-token", "user_id": "KITE123"},
+    )
+
+    request = types.SimpleNamespace(
+        query_params={"status": "success", "request_token": "request-token", "state": "valid-query-state"},
+        cookies={"sslago_kite_state": "stale-cookie-state"},
+    )
+
+    response = fastapi_routers.kite_callback(request)
+
+    assert response.status_code == 303
+    assert "status=connected" in response.headers["location"]
+    assert fake_db["apis"].find_one({"user": "alice", "broker": "zerodha"})["kiteUserId"] == "KITE123"
+    assert fake_db["broker_oauth_states"].find_one({"state": "valid-query-state"}) is None
+    assert fake_db["broker_oauth_states"].find_one({"state": "stale-cookie-state"}) is not None
+
+
+def test_kite_callback_missing_state_returns_controlled_error(monkeypatch, fake_db):
+    monkeypatch.setattr(fastapi_routers, "get_database", lambda: fake_db)
+    request = types.SimpleNamespace(
+        query_params={"status": "success", "request_token": "request-token"},
+        cookies={},
+    )
+
+    response = fastapi_routers.kite_callback(request)
+
+    assert response.status_code == 303
+    assert "status=failed" in response.headers["location"]
+    assert "Kite+callback+state+missing" in response.headers["location"]
+
+
+def test_kite_postback_updates_order_log(monkeypatch, fake_db):
+    fake_db["order_logs"].insert_one({
+        "user": "alice",
+        "broker": "zerodha",
+        "orderId": "KITE123",
+        "status": "placed",
+    })
+    monkeypatch.setattr(fastapi_routers, "get_database", lambda: fake_db)
+
+    class FakeRequest:
+        headers = {"content-type": "application/json"}
+
+        async def json(self):
+            return {"order_id": "KITE123", "status": "COMPLETE"}
+
+    response = asyncio.run(fastapi_routers.kite_postback(FakeRequest()))
+    row = fake_db["order_logs"].find_one({"orderId": "KITE123"})
+
+    assert response.success is True
+    assert row["postbackStatus"] == "COMPLETE"
+    assert row["postbackPayload"]["order_id"] == "KITE123"

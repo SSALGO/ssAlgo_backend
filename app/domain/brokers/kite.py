@@ -61,7 +61,7 @@ class KiteService:
         self.require_config()
         params = {"v": 3, "api_key": self.api_key}
         if state:
-            params["state"] = str(state).strip()
+            params["redirect_params"] = urlencode({"state": str(state).strip()})
         return f"{self.LOGIN_URL}?{urlencode(params)}"
 
     def checksum(self, request_token):

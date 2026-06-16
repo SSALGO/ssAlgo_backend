@@ -122,6 +122,13 @@ def test_legacy_connector_loads_kite_redirect_session(monkeypatch, fake_db):
                 "session_data": session_data,
             }
 
+        def _ensure_zerodha_market_data(self, user, api_key, access_token):
+            self.market_data_started = {
+                "user": user,
+                "api_key": api_key,
+                "access_token": access_token,
+            }
+
     exchange = TestExchange.__new__(TestExchange)
 
     user, kite, session = exchange._login_zerodha({
@@ -144,6 +151,34 @@ def test_legacy_connector_loads_kite_redirect_session(monkeypatch, fake_db):
         "filter_value": "alice",
         "session_data": {"access_token": "same-day-token", "kite_user_id": "KITE123"},
     }
+    assert exchange.market_data_started == {
+        "user": "alice",
+        "api_key": "kite-key",
+        "access_token": "same-day-token",
+    }
+
+
+def test_legacy_connector_marks_zerodha_websocket_connected(monkeypatch, fake_db):
+    from connectors.connector import Exchange
+
+    calls = []
+
+    def fake_connect(api_key, access_token, threaded=True):
+        calls.append((api_key, access_token, threaded))
+        return {"connected": True, "threaded": threaded}
+
+    monkeypatch.setattr("app.domain.market_data.kite_market_data.connect", fake_connect)
+    exchange = Exchange.__new__(Exchange)
+    exchange.db = fake_db
+
+    exchange._ensure_zerodha_market_data("alice", "kite-key", "same-day-token")
+    health = fake_db["broker_health"].find_one({"user": "alice", "broker": "zerodha"})
+
+    assert calls == [("kite-key", "same-day-token", True)]
+    assert health["login_status"] == "connected"
+    assert health["websocket_status"] == "connected"
+    assert health["token_status"] == "connected"
+    assert health["last_error"] == ""
 
 
 def test_kite_market_data_cache_tracks_latest_tick():

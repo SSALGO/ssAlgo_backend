@@ -1340,6 +1340,53 @@ class Exchange:
             'date': str(datetime.datetime.now().date())
         })
 
+    def _ensure_zerodha_market_data(self, user, api_key, access_token):
+        """Start Kite market data and update the readiness gate."""
+        try:
+            from app.domain.market_data import kite_market_data
+
+            result = kite_market_data.connect(api_key, access_token, threaded=True)
+            self.db["broker_health"].update_one(
+                {"user": user, "broker": "zerodha"},
+                {
+                    "$set": {
+                        "login_status": "connected",
+                        "websocket_status": "connected",
+                        "token_status": "connected",
+                        "last_error": "",
+                        "updated_at": datetime.datetime.utcnow(),
+                    }
+                },
+                upsert=True,
+            )
+            trading_event(
+                "zerodha_market_data_started",
+                force=True,
+                user=user,
+                broker="zerodha",
+                result=result,
+            )
+        except Exception as exc:
+            self.db["broker_health"].update_one(
+                {"user": user, "broker": "zerodha"},
+                {
+                    "$set": {
+                        "login_status": "connected",
+                        "websocket_status": "disconnected",
+                        "last_error": f"Kite market-data websocket failed: {exc}",
+                        "updated_at": datetime.datetime.utcnow(),
+                    }
+                },
+                upsert=True,
+            )
+            trading_exception(
+                "zerodha_market_data_start_error",
+                exc,
+                force=True,
+                user=user,
+                broker="zerodha",
+            )
+
     def _ensure_collection_exists(self, collection_name):
         """Ensure database collection exists"""
         if collection_name not in self.db.list_collection_names():
@@ -1825,6 +1872,7 @@ class Exchange:
                     kite_user_id=item.get('kiteUserId') or item.get('user_id') or '',
                     token_date=token_date or today,
                 )
+                self._ensure_zerodha_market_data(item['user'], api_key, access_token)
                 return item['user'], kite, {'access_token': access_token}
 
             kite = KiteConnect(api_key=api_key)
@@ -1867,6 +1915,7 @@ class Exchange:
             kite.set_access_token(access_token)
             
             self._save_session_to_db('zerodhaloginsess', 'user_id', item['user_id'], {'access_token': access_token})
+            self._ensure_zerodha_market_data(item['user'], api_key, access_token)
             return item['user'], kite, {'access_token': access_token}
         except Exception as e:
             print(f"Zerodha login error for {item['user']}: {e}")

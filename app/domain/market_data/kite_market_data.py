@@ -17,8 +17,13 @@ class KiteMarketDataService:
         self._lock = threading.RLock()
         self._ticker = None
         self._connected = False
+        self._connection_key = None
 
     def connect(self, api_key, access_token, *, threaded=True):
+        connection_key = f"{api_key}:{str(access_token or '')[:8]}"
+        with self._lock:
+            if self._ticker and self._connected and self._connection_key == connection_key:
+                return {"connected": True, "threaded": threaded, "reused": True}
         try:
             from kiteconnect import KiteTicker
         except ImportError as exc:
@@ -50,6 +55,7 @@ class KiteMarketDataService:
         ticker.on_connect = on_connect
         ticker.on_close = on_close
         self._ticker = ticker
+        self._connection_key = connection_key
         ticker.connect(threaded=threaded)
         return {"connected": True, "threaded": threaded}
 
@@ -80,6 +86,7 @@ class KiteMarketDataService:
         self._ticker = None
         with self._lock:
             self._connected = False
+            self._connection_key = None
         if ticker:
             ticker.close()
         trading_event("kite_market_data_disconnected", broker="zerodha", reason="manual", force=True)

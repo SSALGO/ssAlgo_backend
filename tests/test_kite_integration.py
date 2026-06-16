@@ -8,6 +8,7 @@ from app.core.secrets import encrypt_secret
 from app.api import fastapi_routers
 from app.domain.brokers.kite import KiteService, KiteTokenExpired
 from app.domain.market_data.kite_market_data import KiteMarketDataService
+from app.workers.trading_worker import TradingWorker
 
 
 class FakeKiteResponse:
@@ -187,3 +188,46 @@ def test_kite_postback_updates_order_log(monkeypatch, fake_db):
     assert response.success is True
     assert row["postbackStatus"] == "COMPLETE"
     assert row["postbackPayload"]["order_id"] == "KITE123"
+
+
+def test_worker_refresh_subscriptions_starts_kite_websocket(monkeypatch, fake_db):
+    monkeypatch.setattr("app.domain.brokers.kite.AppConfig.KITE_API_KEY", "kite-key")
+    fake_db["broker"].insert_one({"user": "alice", "selectedbroker": "zerodha"})
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "zerodha",
+        "isConnected": True,
+        "accessTokenEncrypted": encrypt_secret("same-day-token"),
+        "tokenDate": datetime.datetime.utcnow().date().isoformat(),
+    })
+    fake_db["strategies"].insert_one({
+        "user": "alice",
+        "status": "opened",
+        "live": True,
+        "symbol": "NIFTY26JUNFUT",
+    })
+    fake_db["kite_instruments"].insert_one({
+        "tradingsymbol": "NIFTY26JUNFUT",
+        "exchange": "NFO",
+        "instrument_token": 123456,
+    })
+    calls = {"connect": [], "subscribe": []}
+
+    def fake_connect(api_key, access_token, threaded=True):
+        calls["connect"].append((api_key, access_token, threaded))
+        return {"connected": True, "threaded": threaded}
+
+    def fake_subscribe(tokens):
+        calls["subscribe"].append(list(tokens))
+        return list(tokens)
+
+    monkeypatch.setattr("app.workers.trading_worker.kite_market_data.connect", fake_connect)
+    monkeypatch.setattr("app.workers.trading_worker.kite_market_data.subscribe_instruments", fake_subscribe)
+
+    result = TradingWorker(db=fake_db).refresh_subscriptions(user="alice", broker="zerodha")
+    health = fake_db["broker_health"].find_one({"user": "alice", "broker": "zerodha"})
+
+    assert calls["connect"] == [("kite-key", "same-day-token", True)]
+    assert calls["subscribe"] == [[123456]]
+    assert result[0]["result"]["status"] == "connected"
+    assert health["websocket_status"] == "connected"

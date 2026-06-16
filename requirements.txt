@@ -37,6 +37,7 @@ pytz==2026.2
 # Broker / websocket integrations
 geocoder==1.38.1
 Ant-A3-tradehub-sdk-production==1.1.7
+kiteconnect==5.0.1
 NorenRestApiPy==0.0.22
 rel==0.4.9.26
 setuptools==80.9.0

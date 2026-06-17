@@ -1,4 +1,5 @@
 import os
+import threading
 
 from app.core.config import AppConfig
 from app.core.secrets import decrypt_secret
@@ -37,23 +38,254 @@ class FeedProvider:
 class UpstoxFeedProvider(FeedProvider):
     name = "upstox"
 
+    INDEX_INSTRUMENTS = {
+        "SENSEX": "BSE_INDEX|SENSEX",
+        "FINNIFTY": "NSE_INDEX|Nifty Fin Service",
+        "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+        "MIDCPNIFTY": "NSE_INDEX|NIFTY MIDCAP 150",
+        "NIFTY": "NSE_INDEX|Nifty 50",
+    }
+
+    def __init__(self, db, prices):
+        super().__init__(db, prices)
+        self.client = None
+        self.streamer = None
+        self._thread = None
+        self._instrument_symbols = {}
+        self._subscribed_keys = []
+
+    def _access_token(self):
+        return str(
+            AppConfig.UPSTOX_ACCESS_TOKEN
+            or AppConfig.MARKET_FEED_ACCESS_TOKEN
+            or os.getenv("SSLAGO_UPSTOX_ACCESS_TOKEN", "")
+            or os.getenv("SSLAGO_MARKET_FEED_ACCESS_TOKEN", "")
+        ).strip()
+
+    def _env_instruments(self):
+        mappings = {}
+        raw = os.getenv("SSLAGO_UPSTOX_INSTRUMENTS", "")
+        for item in raw.split(","):
+            if "=" not in item:
+                continue
+            symbol, instrument_key = item.split("=", 1)
+            symbol = symbol.strip().upper()
+            instrument_key = instrument_key.strip()
+            if symbol and instrument_key:
+                mappings[symbol] = instrument_key
+        return mappings
+
+    def _instrument_key(self, symbol):
+        symbol = str(symbol or "").strip().upper()
+        if not symbol:
+            return ""
+        env_match = self._env_instruments().get(symbol)
+        if env_match:
+            return env_match
+        if symbol in self.INDEX_INSTRUMENTS:
+            return self.INDEX_INSTRUMENTS[symbol]
+        if self.db is not None:
+            row = (
+                self.db["upstox_instruments"].find_one({"tradingsymbol": symbol})
+                or self.db["upstox_instruments"].find_one({"symbol": symbol})
+                or self.db["upstox_instruments"].find_one({"name": symbol})
+            )
+            if row and row.get("instrument_key"):
+                return str(row["instrument_key"]).strip()
+        return symbol
+
     def connect(self):
-        token = str(AppConfig.UPSTOX_ACCESS_TOKEN or os.getenv("SSLAGO_UPSTOX_ACCESS_TOKEN", "")).strip()
+        token = self._access_token()
         if not token:
             raise RuntimeError("Upstox live feed token is not configured")
         try:
-            import upstox_client  # noqa: F401
+            import upstox_client
         except ImportError as exc:
             raise RuntimeError("upstox_client is required for Upstox live market feed") from exc
-        raise RuntimeError("Upstox live websocket provider is not wired for this SDK version yet")
+
+        configuration = upstox_client.Configuration()
+        configuration.access_token = token
+        self.client = upstox_client.ApiClient(configuration)
+        streamer_class = getattr(
+            upstox_client,
+            "MarketDataStreamerV3",
+            getattr(upstox_client, "MarketDataStreamer", None),
+        )
+        if streamer_class is None:
+            raise RuntimeError("Installed upstox_client does not expose a market data streamer")
+
+        try:
+            self.streamer = streamer_class(self.client, list(self._subscribed_keys), "full")
+        except TypeError:
+            self.streamer = streamer_class(self.client)
+
+        self._register_callbacks(self.streamer)
+        self.connected = True
+        self.last_error = ""
+
+        self._thread = threading.Thread(
+            target=self._run_streamer,
+            name="upstox-market-feed",
+            daemon=True,
+        )
+        self._thread.start()
+        return {"connected": True, "provider": self.name, "threaded": True}
+
+    def _register_callbacks(self, streamer):
+        on = getattr(streamer, "on", None)
+        if not callable(on):
+            return
+        for event_name, callback in (
+            ("open", self._mark_open),
+            ("message", self.on_tick),
+            ("error", self._mark_error),
+            ("close", self._mark_closed),
+        ):
+            try:
+                on(event_name, callback)
+            except Exception:
+                pass
+
+    def _run_streamer(self):
+        try:
+            self.streamer.connect()
+        except Exception as exc:
+            self._mark_error(exc)
+
+    def _mark_open(self, *_args, **_kwargs):
+        self.connected = True
+        self.last_error = ""
+        if self._subscribed_keys:
+            self._subscribe_streamer(self._subscribed_keys)
+
+    def _mark_closed(self, *_args, **_kwargs):
+        self.connected = False
+
+    def _mark_error(self, error, *_args, **_kwargs):
+        self.connected = False
+        self.last_error = str(error)
+
+    def _subscribe_streamer(self, instrument_keys):
+        if not self.streamer or not instrument_keys:
+            return []
+        subscribe = getattr(self.streamer, "subscribe", None)
+        if not callable(subscribe):
+            return []
+        try:
+            subscribe(instrument_keys, "full")
+        except TypeError:
+            subscribe("full", instrument_keys)
+        return sorted(instrument_keys)
 
     def subscribe(self, symbols):
+        subscribed = []
+        missing = []
+        self._instrument_symbols = {}
+        for symbol in sorted(symbols or []):
+            instrument_key = self._instrument_key(symbol)
+            if not instrument_key:
+                missing.append(symbol)
+                continue
+            subscribed.append(instrument_key)
+            self._instrument_symbols[instrument_key] = str(symbol or "").strip().upper()
+        self._subscribed_keys = sorted(set(subscribed))
+        if self.streamer:
+            self._subscribe_streamer(self._subscribed_keys)
         return {
             "provider": self.name,
             "symbols": sorted(symbols or []),
-            "instrument_tokens": [],
-            "missing_symbols": sorted(symbols or []),
+            "instrument_tokens": self._subscribed_keys,
+            "missing_symbols": sorted(missing),
         }
+
+    def disconnect(self):
+        if self.streamer:
+            for method_name in ("disconnect", "close"):
+                method = getattr(self.streamer, method_name, None)
+                if callable(method):
+                    method()
+                    break
+        super().disconnect()
+
+    def _plain(self, value):
+        if isinstance(value, dict):
+            return {key: self._plain(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._plain(item) for item in value]
+        if hasattr(value, "DESCRIPTOR"):
+            try:
+                from google.protobuf.json_format import MessageToDict
+
+                return self._plain(MessageToDict(value, preserving_proto_field_name=True))
+            except Exception:
+                pass
+        if hasattr(value, "to_dict"):
+            return self._plain(value.to_dict())
+        if hasattr(value, "__dict__"):
+            return {
+                key: self._plain(item)
+                for key, item in value.__dict__.items()
+                if not key.startswith("_")
+            }
+        return value
+
+    def _nested(self, value, *paths):
+        for path in paths:
+            current = value
+            for key in path:
+                if not isinstance(current, dict):
+                    current = None
+                    break
+                current = current.get(key)
+            if current not in (None, ""):
+                return current
+        return None
+
+    def _extract_ltp(self, feed):
+        return self._nested(
+            feed,
+            ("ltp",),
+            ("ltpc", "ltp"),
+            ("ff", "indexFF", "ltpc", "ltp"),
+            ("ff", "marketFF", "ltpc", "ltp"),
+            ("fullFeed", "indexFF", "ltpc", "ltp"),
+            ("fullFeed", "marketFF", "ltpc", "ltp"),
+        )
+
+    def _extract_bid_ask(self, feed):
+        quotes = self._nested(
+            feed,
+            ("marketLevel", "bidAskQuote"),
+            ("ff", "marketFF", "marketLevel", "bidAskQuote"),
+            ("fullFeed", "marketFF", "marketLevel", "bidAskQuote"),
+        )
+        if not isinstance(quotes, list) or not quotes:
+            return None, None
+        top = quotes[0] if isinstance(quotes[0], dict) else {}
+        return top.get("bidP") or top.get("bid_price"), top.get("askP") or top.get("ask_price")
+
+    def on_tick(self, message):
+        payload = self._plain(message)
+        feeds = payload.get("feeds") if isinstance(payload, dict) else None
+        if not isinstance(feeds, dict):
+            return None
+        saved = None
+        for instrument_key, feed in feeds.items():
+            symbol = self._instrument_symbols.get(instrument_key) or str(instrument_key or "").strip().upper()
+            ltp = self._extract_ltp(feed)
+            bid, ask = self._extract_bid_ask(feed)
+            saved = self.prices.save_price(
+                symbol=symbol,
+                provider=self.name,
+                exchange=str(instrument_key).split("|", 1)[0],
+                token=instrument_key,
+                ltp=ltp,
+                bid=bid,
+                ask=ask,
+                depth=feed,
+            )
+            trading_event("market_feed_tick_saved", provider=self.name, symbol=symbol, token=instrument_key, ltp=ltp)
+        return saved
 
 
 class AliceBlueFeedProvider(FeedProvider):

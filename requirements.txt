@@ -41,6 +41,7 @@ kiteconnect==5.0.1
 NorenRestApiPy==0.0.22
 rel==0.4.9.26
 setuptools==80.9.0
+upstox-python-sdk>=2.13.0
 websocket-client==1.9.0
 
 # Optional browser-based Shoonya OAuth automation.

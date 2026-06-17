@@ -496,3 +496,65 @@ def test_market_feed_tick_is_written_to_market_prices(fake_db):
     assert row["ltp"] == 24100.25
     assert saved["bid"] == 24100.0
     assert saved["ask"] == 24100.5
+
+
+def test_upstox_feed_provider_subscribes_index_and_saves_tick(monkeypatch, fake_db):
+    from app.domain.market_data import MarketPriceRepository
+    from app.domain.market_data.providers import UpstoxFeedProvider
+
+    created = {}
+
+    class FakeConfiguration:
+        access_token = ""
+
+    class FakeApiClient:
+        def __init__(self, configuration):
+            self.configuration = configuration
+
+    class FakeMarketDataStreamerV3:
+        def __init__(self, client, instrument_keys, mode):
+            self.client = client
+            self.instrument_keys = instrument_keys
+            self.mode = mode
+            self.callbacks = {}
+            self.subscriptions = []
+            created["streamer"] = self
+
+        def on(self, event_name, callback):
+            self.callbacks[event_name] = callback
+
+        def connect(self):
+            self.callbacks["open"]()
+
+        def subscribe(self, instrument_keys, mode):
+            self.subscriptions.append((list(instrument_keys), mode))
+
+    fake_upstox = types.SimpleNamespace(
+        Configuration=FakeConfiguration,
+        ApiClient=FakeApiClient,
+        MarketDataStreamerV3=FakeMarketDataStreamerV3,
+    )
+    monkeypatch.setitem(sys.modules, "upstox_client", fake_upstox)
+    monkeypatch.setenv("SSLAGO_UPSTOX_ACCESS_TOKEN", "token")
+
+    provider = UpstoxFeedProvider(fake_db, MarketPriceRepository(fake_db))
+    result = provider.connect()
+    subscribe_result = provider.subscribe(["NIFTY"])
+    row = provider.on_tick({
+        "feeds": {
+            "NSE_INDEX|Nifty 50": {
+                "ff": {
+                    "indexFF": {
+                        "ltpc": {"ltp": 24500.25},
+                    },
+                },
+            },
+        },
+    })
+
+    saved = fake_db["market_prices"].find_one({"symbol": "NIFTY", "provider": "upstox"})
+    assert result["connected"] is True
+    assert subscribe_result["instrument_tokens"] == ["NSE_INDEX|Nifty 50"]
+    assert created["streamer"].subscriptions[-1] == (["NSE_INDEX|Nifty 50"], "full")
+    assert row["ltp"] == 24500.25
+    assert saved["token"] == "NSE_INDEX|Nifty 50"

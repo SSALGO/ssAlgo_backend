@@ -63,6 +63,21 @@ class UpstoxFeedProvider(FeedProvider):
             or os.getenv("SSLAGO_MARKET_FEED_ACCESS_TOKEN", "")
         ).strip()
 
+    def _ensure_quote_client(self):
+        if self.client:
+            return self.client
+        token = self._access_token()
+        if not token:
+            raise RuntimeError("Upstox live feed token is not configured")
+        try:
+            import upstox_client
+        except ImportError as exc:
+            raise RuntimeError("upstox_client is required for Upstox live market feed") from exc
+        configuration = upstox_client.Configuration()
+        configuration.access_token = token
+        self.client = upstox_client.ApiClient(configuration)
+        return self.client
+
     def _env_instruments(self):
         mappings = {}
         raw = os.getenv("SSLAGO_UPSTOX_INSTRUMENTS", "")
@@ -197,6 +212,91 @@ class UpstoxFeedProvider(FeedProvider):
             raise
         return sorted(instrument_keys)
 
+    def _quote_ltp(self, instrument_key):
+        try:
+            import upstox_client
+        except ImportError:
+            return None
+        if not self.client:
+            self._ensure_quote_client()
+
+        response = None
+        quote_api_v3 = getattr(upstox_client, "MarketQuoteV3Api", None)
+        if quote_api_v3 is not None:
+            try:
+                response = quote_api_v3(self.client).get_ltp(instrument_key=instrument_key)
+            except Exception:
+                response = None
+        if response is None:
+            quote_api = getattr(upstox_client, "MarketQuoteApi", None)
+            if quote_api is None:
+                return None
+            response = quote_api(self.client).ltp(instrument_key, "2.0")
+
+        payload = self._plain(response)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            return None
+        for quote in data.values():
+            if not isinstance(quote, dict):
+                continue
+            if str(quote.get("instrument_token") or "").strip() not in {"", instrument_key}:
+                continue
+            ltp = quote.get("last_price") or quote.get("ltp")
+            if ltp not in (None, ""):
+                return ltp
+        return None
+
+    def _warm_ltp_snapshot(self, instrument_keys):
+        for instrument_key in sorted(set(instrument_keys or [])):
+            try:
+                ltp = self._quote_ltp(instrument_key)
+                if ltp in (None, ""):
+                    continue
+                symbol = self._instrument_symbols.get(instrument_key) or str(instrument_key or "").strip().upper()
+                self.prices.save_price(
+                    symbol=symbol,
+                    provider=self.name,
+                    exchange=str(instrument_key).split("|", 1)[0],
+                    token=instrument_key,
+                    ltp=ltp,
+                    force=True,
+                )
+                trading_event(
+                    "market_feed_ltp_snapshot_saved",
+                    provider=self.name,
+                    symbol=symbol,
+                    token=instrument_key,
+                    ltp=ltp,
+                )
+            except Exception as exc:
+                trading_event(
+                    "market_feed_ltp_snapshot_failed",
+                    provider=self.name,
+                    token=instrument_key,
+                    error=str(exc),
+                )
+
+    def warm_symbols(self, symbols):
+        subscribed = []
+        missing = []
+        self._instrument_symbols = {}
+        for symbol in sorted(symbols or []):
+            instrument_key = self._instrument_key(symbol)
+            if not instrument_key:
+                missing.append(symbol)
+                continue
+            subscribed.append(instrument_key)
+            self._instrument_symbols[instrument_key] = str(symbol or "").strip().upper()
+        self._subscribed_keys = sorted(set(subscribed))
+        self._warm_ltp_snapshot(self._subscribed_keys)
+        return {
+            "provider": self.name,
+            "symbols": sorted(symbols or []),
+            "instrument_tokens": self._subscribed_keys,
+            "missing_symbols": sorted(missing),
+        }
+
     def subscribe(self, symbols):
         subscribed = []
         missing = []
@@ -211,6 +311,7 @@ class UpstoxFeedProvider(FeedProvider):
         self._subscribed_keys = sorted(set(subscribed))
         if self.streamer:
             self._subscribe_streamer(self._subscribed_keys)
+        self._warm_ltp_snapshot(self._subscribed_keys)
         return {
             "provider": self.name,
             "symbols": sorted(symbols or []),

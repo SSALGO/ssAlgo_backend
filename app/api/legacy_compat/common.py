@@ -345,11 +345,17 @@ def fractal_reset_update(botcode, username=None, set_fields=None):
             open_query["user"] = username
         has_open_position = collection("Opositions").count_documents(open_query, limit=1) > 0
         if not has_open_position:
-            update["$unset"] = {
-                "fractal_fire_state": "",
-                "fractal_fire_time": "",
-                "fractal_fire_reason": "",
-            }
+            active_entry_state = strategy.get("entry_order_state") in {"submitting", "submitted"}
+            if not active_entry_state:
+                update["$unset"] = {
+                    "fractal_fire_state": "",
+                    "fractal_fire_time": "",
+                    "fractal_fire_reason": "",
+                    "entry_locks": "",
+                    "entry_order_state": "",
+                    "entry_order_time": "",
+                    "entry_order_source": "",
+                }
             update["$set"]["position"] = "out"
     return update
 

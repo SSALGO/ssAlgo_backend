@@ -2952,8 +2952,6 @@ class Exchange:
                 self.UTBOT(trade)
             elif trade['strategy'] == 'SSTRIKE':
                 self.SSTRIKE(trade)
-            elif trade['strategy']=='FRACTALNUBIATIMEHEDGEORDER':
-                self.FRACTALNUBIATIMEHEDGEORDER(trade)
             elif trade['strategy'] == 'MCXSTRATEGY':
                 self.MCXSTRATEGY(trade)
         except Exception as exc:
@@ -3054,7 +3052,10 @@ class Exchange:
                 for i in pos:
                     poss.append(i['botcode'])
                 #print(poss)
-                mains = list(self.strategy_collection.find({'$or': [{'status': 'opened'}, {'position': 'in'}]}))
+                mains = list(self.strategy_collection.find({
+                    '$or': [{'status': 'opened'}, {'position': 'in'}],
+                    'strategy': {'$ne': 'FRACTALNUBIATIMEHEDGEORDER'},
+                }))
                 if len(poss)>0:
                     mains1 = list(self.strategy_collection.find({'botcode': {'$in': poss}}))
                     if len(mains1)>0:
@@ -4705,6 +4706,449 @@ class Exchange:
             return True
         return False
 
+    def _clear_fractal_fire_state(self, trade):
+        update = {
+            'fractal_fire_state': '',
+            'fractal_fire_time': '',
+            'fractal_fire_reason': '',
+        }
+        self.strategy_collection.update_one(
+            {'botcode': trade['botcode'], 'user': trade['user']},
+            {
+                '$set': update,
+                '$unset': {
+                    'entry_locks': '',
+                    'entry_order_state': '',
+                    'entry_order_time': '',
+                    'entry_order_source': '',
+                    'last_broker_order_error': '',
+                    'last_broker_order_error_time': '',
+                }
+            }
+        )
+        trade.update(update)
+
+    def _fractal_exit_side(self, entry_side):
+        return 'BUY' if str(entry_side).upper() == 'SELL' else 'SELL'
+
+    def _fractal_exit_lock_key(self, oposition_id, optiontoken, exit_side):
+        return f"{str(oposition_id)}_{str(optiontoken)}_{str(exit_side).upper()}"
+
+    def _fractal_entry_lock_key(self, trade, leg_id, optiontoken, entry_side):
+        return "_".join([
+            str(trade.get('user')),
+            str(trade.get('botcode')),
+            str(leg_id),
+            str(optiontoken),
+            str(entry_side).upper(),
+        ])
+
+    def _lock_fractal_hedge_entry_leg(self, trade, planned_leg, leg_id, entry_side, entry_qty, source):
+        lock_key = self._fractal_entry_lock_key(
+            trade,
+            leg_id,
+            planned_leg.get('optiontoken'),
+            entry_side,
+        )
+        lock_path = f'entry_locks.{lock_key}.status'
+        now = int(datetime.datetime.now().timestamp())
+        result = self.strategy_collection.update_one(
+            {
+                'botcode': trade['botcode'],
+                'user': trade['user'],
+                '$or': [
+                    {lock_path: {'$exists': False}},
+                    {lock_path: {'$nin': ['entry_submitting', 'submitted', 'complete']}},
+                ],
+            },
+            {
+                '$set': {
+                    f'entry_locks.{lock_key}': {
+                        'status': 'entry_submitting',
+                        'leg_id': str(leg_id),
+                        'optiontoken': int(planned_leg.get('optiontoken')),
+                        'optionname': planned_leg.get('option'),
+                        'entry_side': str(entry_side).upper(),
+                        'entry_qty': int(entry_qty),
+                        'source': source,
+                        'locked_at': now,
+                    },
+                    'entry_order_state': 'submitting',
+                    'entry_order_time': now,
+                }
+            }
+        )
+        if getattr(result, 'modified_count', 0) == 1:
+            trading_event(
+                'fractal_hedge_entry_locked',
+                force=True,
+                user=trade.get('user'),
+                strategy_id=trade.get('botcode'),
+                symbol=trade.get('symbol'),
+                leg_id=str(leg_id),
+                optiontoken=planned_leg.get('optiontoken'),
+                optionname=planned_leg.get('option'),
+                side=str(entry_side).upper(),
+                qty=int(entry_qty),
+                source_function=source,
+                lock_key=lock_key,
+            )
+            return lock_key
+
+        trading_event(
+            'entry_order_duplicate_skipped',
+            force=True,
+            user=trade.get('user'),
+            strategy_id=trade.get('botcode'),
+            symbol=trade.get('symbol'),
+            leg_id=str(leg_id),
+            optiontoken=planned_leg.get('optiontoken'),
+            optionname=planned_leg.get('option'),
+            side=str(entry_side).upper(),
+            qty=int(entry_qty),
+            source_function=source,
+            lock_key=lock_key,
+        )
+        return None
+
+    def _lock_fractal_hedge_entry_group(self, trade, source):
+        now = int(datetime.datetime.now().timestamp())
+        result = self.strategy_collection.update_one(
+            {
+                'botcode': trade['botcode'],
+                'user': trade['user'],
+                '$or': [
+                    {'entry_order_state': {'$exists': False}},
+                    {'entry_order_state': {'$nin': ['submitting', 'submitted']}},
+                ],
+            },
+            {
+                '$set': {
+                    'entry_order_state': 'submitting',
+                    'entry_order_time': now,
+                    'entry_order_source': source,
+                }
+            }
+        )
+        if getattr(result, 'modified_count', 0) == 1:
+            trading_event(
+                'fractal_hedge_entry_group_locked',
+                force=True,
+                user=trade.get('user'),
+                strategy_id=trade.get('botcode'),
+                symbol=trade.get('symbol'),
+                source_function=source,
+            )
+            return True
+        trading_event(
+            'entry_order_duplicate_skipped',
+            force=True,
+            user=trade.get('user'),
+            strategy_id=trade.get('botcode'),
+            symbol=trade.get('symbol'),
+            source_function=source,
+            reason='entry_group_already_submitting_or_submitted',
+        )
+        return False
+
+    def _mark_fractal_hedge_entry_lock(self, trade, lock_key, status, **fields):
+        payload = {
+            f'entry_locks.{lock_key}.status': status,
+            f'entry_locks.{lock_key}.updated_at': int(datetime.datetime.now().timestamp()),
+        }
+        for key, value in fields.items():
+            payload[f'entry_locks.{lock_key}.{key}'] = value
+        self.strategy_collection.update_one(
+            {'botcode': trade['botcode'], 'user': trade['user']},
+            {'$set': payload}
+        )
+
+    def _lock_fractal_hedge_exit_leg(self, trade, itrade, leg, exit_side, exit_qty):
+        lock_key = self._fractal_exit_lock_key(
+            itrade.get('_id'),
+            leg.get('optiontoken'),
+            exit_side,
+        )
+        lock_path = f'exit_locks.{lock_key}.status'
+        now = int(datetime.datetime.now().timestamp())
+        result = self.opositions_collection.update_one(
+            {
+                '_id': itrade['_id'],
+                '$or': [
+                    {lock_path: {'$exists': False}},
+                    {lock_path: {'$nin': ['exit_submitting', 'submitted', 'complete']}},
+                ],
+            },
+            {
+                '$set': {
+                    f'exit_locks.{lock_key}': {
+                        'status': 'exit_submitting',
+                        'optiontoken': int(leg.get('optiontoken')),
+                        'optionname': leg.get('optionname'),
+                        'exit_side': exit_side,
+                        'exit_qty': int(exit_qty),
+                        'locked_at': now,
+                    },
+                    'status': 'exit_pending',
+                    'exittime': now,
+                }
+            }
+        )
+        if getattr(result, 'modified_count', 0) == 1:
+            trading_event(
+                'fractal_hedge_exit_locked',
+                force=True,
+                user=trade.get('user'),
+                strategy_id=trade.get('botcode'),
+                symbol=trade.get('symbol'),
+                optiontoken=leg.get('optiontoken'),
+                optionname=leg.get('optionname'),
+                exit_side=exit_side,
+                exit_qty=int(exit_qty),
+                lock_key=lock_key,
+            )
+            return lock_key
+
+        trading_event(
+            'exit_order_duplicate_skipped',
+            force=True,
+            user=trade.get('user'),
+            strategy_id=trade.get('botcode'),
+            symbol=trade.get('symbol'),
+            optiontoken=leg.get('optiontoken'),
+            optionname=leg.get('optionname'),
+            exit_side=exit_side,
+            exit_qty=int(exit_qty),
+            lock_key=lock_key,
+        )
+        return None
+
+    def _mark_fractal_hedge_exit_lock(self, itrade, lock_key, status, **fields):
+        payload = {
+            f'exit_locks.{lock_key}.status': status,
+            f'exit_locks.{lock_key}.updated_at': int(datetime.datetime.now().timestamp()),
+        }
+        for key, value in fields.items():
+            payload[f'exit_locks.{lock_key}.{key}'] = value
+        self.opositions_collection.update_one(
+            {'_id': itrade['_id']},
+            {'$set': payload}
+        )
+
+    def _get_fractal_hedge_exit_lock(self, itrade, lock_key):
+        current = self.opositions_collection.find_one({'_id': itrade['_id']}) or {}
+        lock = current.get('exit_locks', {}).get(lock_key)
+        return lock if isinstance(lock, dict) else {}
+
+    def _aliceblue_order_complete(self, user, broker_order_id=None, symbol=None, side=None, ret=None):
+        if isinstance(ret, dict) and ret.get('already_closed'):
+            return True
+        if isinstance(ret, dict):
+            status = str(ret.get('orderStatus') or ret.get('status') or '').upper()
+            if status == 'COMPLETE':
+                return True
+        alice = getattr(self, 'alice', {}).get(user)
+        if not alice or not broker_order_id:
+            return False
+        try:
+            orderbook = alice.trade.get_orderbook()
+        except Exception:
+            return False
+        rows = orderbook.get('result') if isinstance(orderbook, dict) else None
+        if not isinstance(rows, list):
+            return False
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_order_id = self._extract_broker_order_id(row)
+            if str(row_order_id or '') != str(broker_order_id):
+                continue
+            if str(row.get('orderStatus') or '').upper() == 'COMPLETE':
+                trading_event(
+                    'exit_confirmed',
+                    force=True,
+                    user=user,
+                    broker='aliceblue',
+                    symbol=symbol,
+                    side=side,
+                    broker_order_id=str(broker_order_id),
+                )
+                return True
+        return False
+
+    def _aliceblue_square_off_fractal_leg(self, trade, leg, exit_side, exit_qty):
+        transaction_type = TransactionType.Buy if exit_side == 'BUY' else TransactionType.Sell
+        alice = self.alice[trade['user']]
+        square_off = getattr(alice, 'square_off_position', None)
+        if callable(square_off):
+            ret = square_off(
+                transaction_type=transaction_type,
+                quantity=int(exit_qty),
+                product_type=ProductType.Delivery,
+                exchange=leg.get('exch'),
+                instrument_id=leg.get('optiontoken'),
+                symbol=leg.get('optionname'),
+                order_type='MKT',
+                order_tag='fractal_hedge_exit',
+            )
+            if self._broker_order_response_ok('aliceblue', ret):
+                return ret
+
+        instrument = alice.get_instrument_by_token(leg.get('exch'), leg.get('optiontoken'))
+        return self._place_aliceblue_limit_order(
+            user=trade['user'],
+            transaction_type=transaction_type,
+            instrument=instrument,
+            quantity=int(exit_qty),
+            product_type=ProductType.Delivery,
+            symbol=leg.get('optionname'),
+            exch=leg.get('exch'),
+            optiontoken=leg.get('optiontoken'),
+            order_tag='fractal_hedge_exit',
+        )
+
+    def _handle_aliceblue_fractal_hedge_exit(self, trade, itrade, reason):
+        now = int(datetime.datetime.now().timestamp())
+        itrade['reason'] = f'{str(datetime.datetime.now())} :: {trade["user"]} :: ### USER EXIT HIT ### {reason}'
+        itrade['status'] = 'exit_pending'
+        itrade['exittime'] = now
+        submitted_count = 0
+        confirmed_count = 0
+        failed_count = 0
+
+        for leg in itrade.get('pos', [])[::-1]:
+            exit_side = self._fractal_exit_side(leg.get('side'))
+            exit_qty = int(leg.get('optionlot', 0)) * int(leg.get('lot', 0))
+            if exit_qty <= 0:
+                failed_count += 1
+                continue
+
+            lock_key = self._lock_fractal_hedge_exit_leg(trade, itrade, leg, exit_side, exit_qty)
+            if not lock_key:
+                existing_lock_key = self._fractal_exit_lock_key(
+                    itrade.get('_id'),
+                    leg.get('optiontoken'),
+                    exit_side,
+                )
+                existing_lock = self._get_fractal_hedge_exit_lock(itrade, existing_lock_key)
+                existing_status = str(existing_lock.get('status') or '')
+                if existing_status in {'submitted', 'complete'}:
+                    submitted_count += 1
+                    confirmed_count += 1 if existing_status == 'complete' else 0
+                    leg['exit_side'] = exit_side
+                    leg['exit_qty'] = exit_qty
+                    leg['exit_order_id'] = existing_lock.get('broker_order_id')
+                    leg['exit_order_status'] = existing_status
+                elif existing_status == 'exit_submitting':
+                    submitted_count += 1
+                continue
+
+            try:
+                ret = self._aliceblue_square_off_fractal_leg(trade, leg, exit_side, exit_qty)
+            except Exception as exc:
+                failed_count += 1
+                self._mark_fractal_hedge_exit_lock(itrade, lock_key, 'failed', error=str(exc))
+                trading_event(
+                    'exit_order_failed',
+                    force=True,
+                    user=trade.get('user'),
+                    strategy_id=trade.get('botcode'),
+                    symbol=trade.get('symbol'),
+                    optiontoken=leg.get('optiontoken'),
+                    optionname=leg.get('optionname'),
+                    exit_side=exit_side,
+                    exit_qty=exit_qty,
+                    error=str(exc),
+                )
+                continue
+
+            broker_order_id = self._extract_broker_order_id(ret)
+            if not self._broker_order_response_ok('aliceblue', ret):
+                failed_count += 1
+                self._mark_fractal_hedge_exit_lock(
+                    itrade, lock_key, 'failed',
+                    response=self._json_safe(ret),
+                )
+                trading_event(
+                    'exit_order_failed',
+                    force=True,
+                    user=trade.get('user'),
+                    strategy_id=trade.get('botcode'),
+                    symbol=trade.get('symbol'),
+                    optiontoken=leg.get('optiontoken'),
+                    optionname=leg.get('optionname'),
+                    exit_side=exit_side,
+                    exit_qty=exit_qty,
+                    broker_order_id=broker_order_id,
+                    response=self._json_safe(ret),
+                )
+                continue
+
+            complete = self._aliceblue_order_complete(
+                trade['user'],
+                broker_order_id=broker_order_id,
+                symbol=leg.get('optionname'),
+                side=exit_side,
+                ret=ret,
+            )
+            status = 'complete' if complete else 'submitted'
+            submitted_count += 1
+            confirmed_count += 1 if complete else 0
+            leg['exit_side'] = exit_side
+            leg['exit_qty'] = exit_qty
+            leg['exit_order_id'] = broker_order_id
+            leg['exit_order_status'] = status
+            self._mark_fractal_hedge_exit_lock(
+                itrade,
+                lock_key,
+                status,
+                broker_order_id=broker_order_id,
+                response=self._json_safe(ret),
+            )
+            trading_event(
+                'exit_order_submitted',
+                force=True,
+                user=trade.get('user'),
+                strategy_id=trade.get('botcode'),
+                symbol=trade.get('symbol'),
+                optiontoken=leg.get('optiontoken'),
+                optionname=leg.get('optionname'),
+                exit_side=exit_side,
+                exit_qty=exit_qty,
+                broker_order_id=broker_order_id,
+                exit_order_status=status,
+            )
+
+        total_legs = len(itrade.get('pos', []))
+        all_submitted = total_legs > 0 and submitted_count >= total_legs and failed_count == 0
+        all_confirmed = total_legs > 0 and confirmed_count >= total_legs and failed_count == 0
+        if all_confirmed:
+            itrade['status'] = 'close'
+            for leg in itrade.get('pos', []):
+                leg['decision'] = 'exit'
+            self._clear_fractal_fire_state(trade)
+        elif failed_count:
+            itrade['status'] = 'exit_failed'
+        else:
+            itrade['status'] = 'exit_pending'
+
+        trade['position'] = 'out' if all_submitted else trade.get('position', 'in')
+        if 'usetype' in list(trade.keys()) and trade['usetype'] == True and trade['status'] != 'paused':
+            trade['status'] = 'opened'
+        else:
+            trade['status'] = 'paused'
+        if trade.get('status') in {'paused', 'closed'} and all_submitted:
+            self._clear_fractal_fire_state(trade)
+        self.strategy_collection.update_one(
+            {'botcode': trade['botcode'], 'user': trade['user']},
+            {'$set': trade}
+        )
+        self.opositions_collection.update_one(
+            {'_id': itrade['_id']},
+            {'$set': itrade}
+        )
+        return all_submitted
+
     def _prepare_fractal_hedge_order_plan(self, trade, legs, exch):
         reasons = []
         planned = []
@@ -4793,7 +5237,7 @@ class Exchange:
                 price_symbol = str(trade['symbol'])
 
             try:
-                option_price = float(self._get_market_price(price_symbol, exch, optiontoken))
+                option_price = float(self._get_market_price(price_symbol, exch, optiontoken, user=user))
                 if option_price <= 0:
                     reasons.append(f"{price_symbol} price unavailable")
             except Exception as exc:
@@ -4803,7 +5247,13 @@ class Exchange:
             price_context = None
             if live and broker == 'aliceblue':
                 transaction_type = TransactionType.Sell if side == 'SELL' else TransactionType.Buy
-                limit_price, price_context = self._aliceblue_limit_price(transaction_type, option, exch, optiontoken)
+                limit_price, price_context = self._aliceblue_limit_price(
+                    transaction_type,
+                    option,
+                    exch,
+                    optiontoken,
+                    user=user,
+                )
                 if limit_price is None:
                     reasons.append(f"AliceBlue limit price unavailable for {option}")
             else:
@@ -5022,8 +5472,9 @@ class Exchange:
                             #print('zcross')
                              
                             #self.strategy_collection.update_one({'botcode': trade['botcode'],'user':trade['user']}, {'$set': {'position':'out'} })
-                            Intraday= (datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
-                            positional=(datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and not trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
+                            market_window = strategy_market_window(trade, self.marketdays)
+                            Intraday = market_window['intraday']
+                            positional = market_window['positional']
                             if Intraday or positional or self.testmode:
                                 Signal=False
                                 if trade['slsignal']:
@@ -5069,24 +5520,12 @@ class Exchange:
 
                                         de=(itrade['pos'][i])
                                         if de['type']!='FUT':
-                                            if de['optionname'] not in list(self.prices.keys()):
-                                                print('dogs1')
-                                                try:
-                                                    self.add_symbol_to_websocket(de['optionname'])
-                                                except:
-                                                    pass
-                                                #print('gggg')
-                                                if de['optionname'] not in list(self.prices.keys()):
-                                                    #print('he')
-                                                    print(self.api.get_quotes(itrade['exch'],de['optionname']))
-                                                    self.prices[de['optionname']]=float(self.api.get_quotes(itrade['exch'],str(de['optiontoken']))['lp'])
-                                                    print(de['optionname'])
-                                                    print(self.prices)
                                             try:
                                                 option_price = self._get_market_price(
                                                     de['optionname'],
                                                     itrade.get('exch'),
-                                                    de.get('optiontoken')
+                                                    de.get('optiontoken'),
+                                                    user=trade.get('user')
                                                 )
                                             except Exception as exc:
                                                 print(
@@ -5189,11 +5628,14 @@ class Exchange:
                                         pnl=float(itrade['pnl'])
                                         reason=reason+f'Trail Stop Loss hit Exit pnl is {str(pnl)} '
                                         Signal=True
-                                    if datetime.datetime.now().time()>datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time() and trade['Intraday']:
+                                    market_now = india_market_now()
+                                    market_time = market_now.time().replace(tzinfo=None)
+                                    market_date = market_now.date()
+                                    if market_time>datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time() and trade['Intraday']:
                                         pnl=float(itrade['pnl'])
                                         reason=reason+f'Intraday hit Exit pnl is {str(pnl)} '
                                         Signal=True
-                                    if datetime.datetime.now().time()>datetime.datetime.strptime(trade['RolloverTime'], '%H:%M').time() and ( ((datetime.date.today())>=rollover)):
+                                    if market_time>datetime.datetime.strptime(trade['RolloverTime'], '%H:%M').time() and (market_date>=rollover):
                                         pnl=float(itrade['pnl'])
                                         reason=reason+f'Rollover time hit Exit pnl is {str(pnl)} '
                                         Signal=True
@@ -5215,6 +5657,11 @@ class Exchange:
                                         print(f'{str(datetime.datetime.now())} :: {userr} :: ### USER EXIT HIT ### {reason}')
                                         #trade['lot']=0
                                         itrade['reason']=f'{str(datetime.datetime.now())} :: {userr} :: ### USER EXIT HIT ### {reason}'
+                                        
+                                        z=self.broker_collection.find_one({'user':trade['user']}) or {}
+                                        if z.get('selectedbroker') == 'aliceblue':
+                                            self._handle_aliceblue_fractal_hedge_exit(trade, itrade, reason)
+                                            break
                                         
                                         itrade['status']='close'
                                         trade['position']='out'
@@ -5426,11 +5873,14 @@ class Exchange:
  
 
 
-                        if  trade['position']=='out' and trade['status']=='opened' and (datetime.datetime.now().time()>datetime.datetime.strptime(trade['afterentrytime'], '%H:%M').time()):
+                        market_now = india_market_now()
+                        market_time = market_now.time().replace(tzinfo=None)
+                        if  trade['position']=='out' and trade['status']=='opened' and (market_time>datetime.datetime.strptime(trade['afterentrytime'], '%H:%M').time()):
                                 #print('ifddddddddddddddd')
                                 #self.strategy_collection.update_one({'botcode': trade['botcode'],'user':trade['user']}, {'$set': {'position':'out'} })
-                                Intraday= (datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
-                                positional=(datetime.datetime.now().time()>datetime.datetime.strptime(trade['StartTime'], '%H:%M').time() and datetime.datetime.now().time()<datetime.datetime.strptime(trade['ExitTime'], '%H:%M').time()) and not trade['Intraday'] and (datetime.date.today().weekday() < self.marketdays)
+                                market_window = strategy_market_window(trade, self.marketdays, now=market_now)
+                                Intraday = market_window['intraday']
+                                positional = market_window['positional']
                                 if Intraday or positional or self.testmode:
                                     Signal=False
                                     sig=False
@@ -5532,6 +5982,17 @@ class Exchange:
                                         if preflight_reasons:
                                             block_reason = '; '.join(preflight_reasons)
                                             self._set_fractal_fire_state(trade, 'blocked', block_reason)
+                                            trading_event(
+                                                "fractal_hedge_order_preflight_blocked",
+                                                force=True,
+                                                user=trade.get('user'),
+                                                strategy_id=trade.get('botcode'),
+                                                strategy=trade.get('strategy'),
+                                                symbol=trade.get('symbol'),
+                                                selected_broker=(z or {}).get('selectedbroker'),
+                                                reason=block_reason,
+                                                reasons=preflight_reasons,
+                                            )
                                             print(
                                                 f"FRACTALNUBIATIMEHEDGEORDER blocked for "
                                                 f"{trade.get('user')} {trade.get('botname')}: "
@@ -5539,10 +6000,36 @@ class Exchange:
                                             )
                                             return
 
+                                        existing_open = self.opositions_collection.find_one({
+                                            'botcode': trade['botcode'],
+                                            'user': trade['user'],
+                                            'status': 'open',
+                                        })
+                                        if existing_open:
+                                            trading_event(
+                                                "fractal_hedge_order_skipped",
+                                                force=True,
+                                                user=trade.get('user'),
+                                                strategy_id=trade.get('botcode'),
+                                                symbol=trade.get('symbol'),
+                                                reason="open_position_already_exists",
+                                            )
+                                            self.strategy_collection.update_one(
+                                                {'botcode': trade['botcode'], 'user': trade['user']},
+                                                {'$set': {'position': 'in'}}
+                                            )
+                                            return
+
+                                        entry_source = 'FRACTALNUBIATIMEHEDGEORDER.entry'
+                                        if not self._lock_fractal_hedge_entry_group(trade, entry_source):
+                                            return
+
                                         self._set_fractal_fire_state(trade, 'attempted')
 
                                         hedge_total_pnl = 0
-                                        for planned_leg in planned_legs:
+                                        skipped_entry_locks = 0
+                                        failed_entry_orders = 0
+                                        for leg_index, planned_leg in enumerate(planned_legs):
                                             trad = planned_leg['trad']
                                             option = planned_leg['option']
                                             option1 = option
@@ -5563,7 +6050,38 @@ class Exchange:
                                                     f"context={planned_leg.get('limit_price_context')}"
                                                 )
                                                 
+                                            ret = None
+                                            entry_lock_key = None
+                                            entry_side = str(trad.get('side')).upper()
+                                            entry_qty = int(optionlot) * int(trad['lot'])
+                                            leg_id = (
+                                                trad.get('leg_id')
+                                                or trad.get('id')
+                                                or f"{trad.get('option')}_{trad.get('strike')}_{trad.get('expiry')}_{leg_index}"
+                                            )
                                             if trade['live']:
+                                                entry_lock_key = self._lock_fractal_hedge_entry_leg(
+                                                    trade,
+                                                    planned_leg,
+                                                    leg_id,
+                                                    entry_side,
+                                                    entry_qty,
+                                                    entry_source,
+                                                )
+                                                if not entry_lock_key:
+                                                    skipped_entry_locks += 1
+                                                    continue
+                                                trading_event(
+                                                    'entry_order_submitting',
+                                                    force=True,
+                                                    user=trade.get('user'),
+                                                    strategy_id=trade.get('botcode'),
+                                                    leg_id=str(leg_id),
+                                                    symbol=option,
+                                                    side=entry_side,
+                                                    qty=entry_qty,
+                                                    source_function=entry_source,
+                                                )
                                                 lot=optionlot
                                                 #place_trade('NFO',trade['EntryOption'], trade['Lot'], 'sell')
                                                 if z['selectedbroker']=='shoonya':
@@ -5759,11 +6277,40 @@ class Exchange:
                                                 print('12')
                                                 print(ret)
                                                 if trade['live'] and not self._broker_order_response_ok(z['selectedbroker'], ret):
+                                                    failed_entry_orders += 1
+                                                    if entry_lock_key:
+                                                        self._mark_fractal_hedge_entry_lock(
+                                                            trade,
+                                                            entry_lock_key,
+                                                            'failed',
+                                                            response=self._json_safe(ret),
+                                                        )
                                                     print(
                                                         f"FRACTALNUBIATIMEHEDGEORDER order rejected for "
                                                         f"{trade.get('user')} {option}: {ret}"
                                                     )
-                                                    return
+                                                    continue
+                                                if entry_lock_key:
+                                                    broker_order_id = self._extract_broker_order_id(ret)
+                                                    self._mark_fractal_hedge_entry_lock(
+                                                        trade,
+                                                        entry_lock_key,
+                                                        'submitted',
+                                                        broker_order_id=broker_order_id,
+                                                        response=self._json_safe(ret),
+                                                    )
+                                                    trading_event(
+                                                        'entry_order_submitted',
+                                                        force=True,
+                                                        user=trade.get('user'),
+                                                        strategy_id=trade.get('botcode'),
+                                                        leg_id=str(leg_id),
+                                                        symbol=option,
+                                                        side=entry_side,
+                                                        qty=entry_qty,
+                                                        broker_order_id=broker_order_id,
+                                                        source_function=entry_source,
+                                                    )
                                                 #print(self.prices)
                                                 option1=option
                                                 print('uuuuuuuuuuuuuuuu')
@@ -5809,21 +6356,56 @@ class Exchange:
                                                 )
                                             leg_pnl = int(leg_pnl)
 
+                                            entry_order_id = self._extract_broker_order_id(ret) if trade['live'] else None
+                                            entry_order_status = 'submitted' if entry_order_id else ''
                                             pos={'user':str(trade['user']),'botname':trade['botname'],'time':int(datetime.datetime.now().timestamp()),'symbol':trade['symbol'],'entry_price':float(underlying_price)
                                             ,'side':trad['side'],'status':"open",'pnl':leg_pnl,'cpnl':leg_pnl,'lot':trad['lot'],'type':trad['option'],
                                             'optionentry':float(option_price),'optionexit':float(current_option_price),'optionlot':int(optionlot),'optionexpiry':str(optionexpiry),
                                             'optionname':str(option1), 'pnlhalf':0,"decision":"intrade",'live':trade['live'],
-                                            'exch':exch,'current_price':float(underlying_price),'botcode':trade['botcode'],'optiontoken':int(optiontoken),'trail_stoploss':0,'futureprice':futureprices}
+                                            'exch':exch,'current_price':float(underlying_price),'botcode':trade['botcode'],'optiontoken':int(optiontoken),'trail_stoploss':0,'futureprice':futureprices,
+                                            'entry_order_id':entry_order_id,'entry_order_status':entry_order_status}
 
                                             poss.append(pos)
                                             hedge_total_pnl += leg_pnl
                                             print(pos)
 
+                                        if failed_entry_orders:
+                                            self.strategy_collection.update_one(
+                                                {'botcode': trade['botcode'], 'user': trade['user']},
+                                                {'$set': {
+                                                    'entry_order_state': 'broker_failed',
+                                                    'last_broker_order_error': 'one_or_more_fractal_hedge_entry_orders_failed',
+                                                    'last_broker_order_error_time': int(datetime.datetime.now().timestamp()),
+                                                }}
+                                            )
+                                            return
+                                        if skipped_entry_locks:
+                                            return
+
+                                        existing_open = self.opositions_collection.find_one({
+                                            'botcode': trade['botcode'],
+                                            'user': trade['user'],
+                                            'status': 'open',
+                                        })
+                                        if existing_open:
+                                            trading_event(
+                                                "fractal_hedge_position_insert_skipped",
+                                                force=True,
+                                                user=trade.get('user'),
+                                                strategy_id=trade.get('botcode'),
+                                                symbol=trade.get('symbol'),
+                                                reason="open_position_already_exists",
+                                            )
+                                            return
+
                                         pos1={'user':str(trade['user']),'botname':trade['botname'],'time':int(datetime.datetime.now().timestamp()),'symbol':trade['symbol'],'status':"open",'live':trade['live'],'pnl':int(hedge_total_pnl),
                                                 'exch':exch,'botcode':trade['botcode'],'pos':poss}
 
                                         self.opositions_collection.insert_one(pos1)
-                                        self.strategy_collection.update_one({'botcode': trade['botcode']}, {'$set': {'position': 'in'}})
+                                        self.strategy_collection.update_one(
+                                            {'botcode': trade['botcode'], 'user': trade['user']},
+                                            {'$set': {'position': 'in', 'entry_order_state': 'submitted'}}
+                                        )
             except Exception as e:
                 print(f"Error in FRACTALNUBIATIMEHEDGEORDER: {e} ") 
 
@@ -8327,7 +8909,8 @@ class Exchange:
                         transaction_type='BUY',
                         quantity=qty,
                         variety="regular",
-                        order_type="MARKET",
+                        order_type="LIMIT",
+                        price=float(pricesss),
                         product="NRML",
                         validity="DAY"
                     )
@@ -9156,7 +9739,8 @@ class Exchange:
                             transaction_type='SELL',
                             quantity=qty,
                             variety="regular",
-                            order_type="MARKET",
+                            order_type="LIMIT",
+                            price=float(pricesss),
                             product="NRML",
                             validity="DAY"
                         )
@@ -10253,7 +10837,7 @@ class Exchange:
                 return self._round_price_to_tick(bid), depth
         return None, None
 
-    def get_order_push_price(self, side, symbol, exch=None, token=None):
+    def get_order_push_price(self, side, symbol, exch=None, token=None, user=None):
         side_text = str(getattr(side, 'value', side)).upper()
         tick_size = self.order_push_tick_size
         push = 5.0
@@ -10277,7 +10861,7 @@ class Exchange:
             }
 
         try:
-            ltp = self._get_market_price(symbol, exch, token)
+            ltp = self._get_market_price(symbol, exch, token, user=user)
         except Exception as e:
             print(f"order push price skipped: price unavailable for {symbol}: {e}")
             return None
@@ -10311,8 +10895,14 @@ class Exchange:
             'depth_age_ms': self._depth_age_ms(depth) if depth else None,
         }
 
-    def _aliceblue_limit_price(self, transaction_type, symbol, exch=None, optiontoken=None):
-        price_context = self.get_order_push_price(transaction_type, symbol, exch, optiontoken)
+    def _aliceblue_limit_price(self, transaction_type, symbol, exch=None, optiontoken=None, user=None):
+        price_context = self.get_order_push_price(
+            transaction_type,
+            symbol,
+            exch,
+            optiontoken,
+            user=user,
+        )
         if not price_context:
             return None, None
         return price_context['limit_price'], price_context
@@ -10322,7 +10912,13 @@ class Exchange:
         symbol, exch=None, optiontoken=None, order_tag='order1'
     ):
         self._assert_selected_broker(user, 'aliceblue')
-        limit_price, price_context = self._aliceblue_limit_price(transaction_type, symbol, exch, optiontoken)
+        limit_price, price_context = self._aliceblue_limit_price(
+            transaction_type,
+            symbol,
+            exch,
+            optiontoken,
+            user=user,
+        )
         side = str(getattr(transaction_type, 'value', transaction_type)).upper()
         if price_context:
             self.last_order_price_context[(user, symbol, side)] = price_context

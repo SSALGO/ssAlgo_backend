@@ -75,15 +75,19 @@ class FakeCollection:
 
         for key, value in update.get("$setOnInsert", {}).items():
             if upserted_id is not None:
-                row[key] = value
+                self._set_value(row, key, value)
         for key, value in update.get("$set", {}).items():
-            row[key] = value
+            self._set_value(row, key, value)
         for key, value in update.get("$inc", {}).items():
-            row[key] = row.get(key, 0) + value
+            self._set_value(row, key, (self._get_value(row, key) or 0) + value)
         for key, value in update.get("$push", {}).items():
-            row.setdefault(key, []).append(value)
+            current = self._get_value(row, key)
+            if current is None:
+                self._set_value(row, key, [])
+                current = self._get_value(row, key)
+            current.append(value)
         for key in update.get("$unset", {}).keys():
-            row.pop(key, None)
+            self._unset_value(row, key)
         return FakeUpdateResult(1, 1, upserted_id)
 
     def update_many(self, query, update):
@@ -115,7 +119,11 @@ class FakeCollection:
     @staticmethod
     def _matches(row, query):
         for key, expected in query.items():
-            value = row.get(key)
+            if key == "$or":
+                if not any(FakeCollection._matches(row, item) for item in expected):
+                    return False
+                continue
+            value = FakeCollection._get_value(row, key)
             if isinstance(expected, dict):
                 if "$gte" in expected and not (value >= expected["$gte"]):
                     return False
@@ -123,16 +131,59 @@ class FakeCollection:
                     return False
                 if "$in" in expected and value not in expected["$in"]:
                     return False
+                if "$nin" in expected and value in expected["$nin"]:
+                    return False
                 if "$ne" in expected and not (value != expected["$ne"]):
                     return False
                 if "$lt" in expected and not (value < expected["$lt"]):
                     return False
-            elif key == "$or":
-                if not any(FakeCollection._matches(row, item) for item in expected):
-                    return False
+                if "$exists" in expected:
+                    exists = FakeCollection._has_value(row, key)
+                    if bool(expected["$exists"]) != exists:
+                        return False
             elif value != expected:
                 return False
         return True
+
+    @staticmethod
+    def _get_value(row, dotted_key):
+        current = row
+        for part in str(dotted_key).split("."):
+            if not isinstance(current, dict) or part not in current:
+                return None
+            current = current[part]
+        return current
+
+    @staticmethod
+    def _has_value(row, dotted_key):
+        sentinel = object()
+        current = row
+        for part in str(dotted_key).split("."):
+            if not isinstance(current, dict) or part not in current:
+                return False
+            current = current[part]
+        return current is not sentinel
+
+    @staticmethod
+    def _set_value(row, dotted_key, value):
+        parts = str(dotted_key).split(".")
+        current = row
+        for part in parts[:-1]:
+            current = current.setdefault(part, {})
+        current[parts[-1]] = value
+
+    @staticmethod
+    def _unset_value(row, dotted_key):
+        parts = str(dotted_key).split(".")
+        current = row
+        for part in parts[:-1]:
+            if not isinstance(current, dict):
+                return
+            current = current.get(part)
+            if current is None:
+                return
+        if isinstance(current, dict):
+            current.pop(parts[-1], None)
 
 
 class FakeDatabase(dict):

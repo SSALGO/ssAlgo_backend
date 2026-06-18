@@ -30,6 +30,7 @@ def ensure_core_indexes(db=None):
     index_specs = {
         "Opositions": [
             ([("user", 1), ("decision", 1), ("status", 1)], "idx_opositions_user_decision_status"),
+            ([("user", 1), ("botcode", 1), ("status", 1)], "idx_opositions_user_botcode_status"),
         ],
         "strategies": [
             ([("user", 1), ("status", 1)], "idx_strategies_user_status"),

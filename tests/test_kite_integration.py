@@ -498,6 +498,60 @@ def test_market_feed_tick_is_written_to_market_prices(fake_db):
     assert saved["ask"] == 24100.5
 
 
+def test_kite_service_uses_saved_user_api_key_when_env_key_is_missing(monkeypatch, fake_db):
+    from app.domain.brokers.kite import KiteService
+
+    monkeypatch.setattr("app.domain.brokers.kite.AppConfig.KITE_API_KEY", "")
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "zerodha",
+        "apiKey": "saved-api-key",
+        "accessTokenEncrypted": "encrypted-token",
+        "tokenDate": KiteService.today().isoformat(),
+        "isConnected": True,
+    })
+    service = KiteService(fake_db)
+    monkeypatch.setattr(service, "access_token", lambda user, require_valid=True: "saved-access-token")
+
+    assert service.headers("alice")["Authorization"] == (
+        "token saved-api-key:saved-access-token"
+    )
+
+
+def test_kite_permission_error_does_not_mark_token_expired(monkeypatch, fake_db):
+    from app.domain.brokers.kite import KiteService
+
+    class FakeResponse:
+        status_code = 403
+
+        def json(self):
+            return {
+                "status": "error",
+                "message": "Insufficient permission for that call.",
+                "error_type": "PermissionException",
+            }
+
+    class FakeHttp:
+        @staticmethod
+        def request(*_args, **_kwargs):
+            return FakeResponse()
+
+    service = KiteService(fake_db, http=FakeHttp())
+    monkeypatch.setattr(
+        service,
+        "headers",
+        lambda user, require_valid=True: {"Authorization": "masked"},
+    )
+    body, status, _latency = service.request("GET", "/quote/ltp", "alice")
+
+    assert status == 403
+    assert body["message"] == "Insufficient permission for that call."
+    assert fake_db["broker_health"].find_one({
+        "user": "alice",
+        "broker": "zerodha",
+    }) is None
+
+
 def test_upstox_feed_provider_subscribes_index_and_saves_tick(monkeypatch, fake_db):
     from app.domain.market_data import MarketPriceRepository
     from app.domain.market_data.providers import UpstoxFeedProvider

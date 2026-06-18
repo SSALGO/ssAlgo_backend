@@ -632,6 +632,104 @@ def test_market_price_uses_fresh_feed_when_global_provider_is_stale(fake_db):
     assert price == 24126.9
 
 
+def test_market_price_uses_selected_zerodha_direct_quote(fake_db):
+    exchange = Exchange.__new__(Exchange)
+    exchange.db = fake_db
+    exchange.broker_collection = fake_db["broker"]
+    exchange.prices = {"NIFTY": 24100.0}
+    exchange.sprices = {}
+    exchange.dataframes = {}
+    exchange.api = None
+    exchange.market_depth_max_age_seconds = 3
+    exchange.market_depths = {}
+    exchange.zerodha = {}
+    fake_db["broker"].insert_one({
+        "user": "alice",
+        "selectedbroker": "zerodha",
+    })
+
+    class FakeKite:
+        def ltp(self, instruments):
+            return {
+                instruments[0]: {
+                    "instrument_token": 56376,
+                    "last_price": 126.5,
+                }
+            }
+
+    exchange.zerodha["alice"] = FakeKite()
+
+    price = exchange._get_market_price(
+        "NIFTY23JUN26C24100",
+        "NFO",
+        56376,
+        user="alice",
+    )
+
+    assert price == 126.5
+    saved = fake_db["market_prices"].find_one({
+        "symbol": "NIFTY23JUN26C24100",
+        "provider": "zerodha",
+    })
+    assert saved["ltp"] == 126.5
+
+
+def test_upstox_direct_quote_uses_option_instrument_key(monkeypatch, fake_db):
+    import sys
+    import types
+
+    exchange = Exchange.__new__(Exchange)
+    exchange.db = fake_db
+    exchange.prices = {"NIFTY": 24100.0}
+    exchange.sprices = {}
+    exchange._price_unavailable_log_times = {}
+    monkeypatch.setattr(
+        "connectors.exchange.AppConfig.UPSTOX_ACCESS_TOKEN",
+        "live-token",
+    )
+
+    class FakeConfiguration:
+        access_token = ""
+
+    class FakeResponse:
+        def to_dict(self):
+            return {
+                "status": "success",
+                "data": {
+                    "NSE_FO|56376": {
+                        "last_price": 127.25,
+                    }
+                },
+            }
+
+    class FakeMarketQuoteV3Api:
+        def __init__(self, _client):
+            pass
+
+        def get_ltp(self, instrument_key):
+            assert instrument_key == "NSE_FO|56376"
+            return FakeResponse()
+
+    fake_module = types.SimpleNamespace(
+        Configuration=FakeConfiguration,
+        ApiClient=lambda configuration: configuration,
+        MarketQuoteV3Api=FakeMarketQuoteV3Api,
+    )
+    monkeypatch.setitem(sys.modules, "upstox_client", fake_module)
+
+    price = exchange._get_upstox_direct_quote_price(
+        "NIFTY23JUN26C24100",
+        "NFO",
+        56376,
+    )
+
+    assert price == 127.25
+    assert fake_db["market_prices"].find_one({
+        "symbol": "NIFTY23JUN26C24100",
+        "provider": "upstox",
+    })["ltp"] == 127.25
+
+
 def test_market_price_repository_throttles_db_writes_but_returns_latest_cache(fake_db):
     from app.domain.market_data import MarketPriceRepository
 

@@ -42,6 +42,7 @@ from app.domain.brokers.aliceblue_auth import (
 )
 from app.domain.brokers.diagnostics import log_aliceblue_diagnostic
 from app.domain.brokers.health import SECRET_FIELD_NAMES
+from app.domain.brokers.kite import KiteService
 from app.domain.market_data import MarketPriceRepository
 from connectors.contracts import CONTRACTS_DIR, contract_file_path
 
@@ -166,11 +167,45 @@ warnings.filterwarnings('ignore')
                          "10m": mt5.TIMEFRAME_M10, "15m": mt5.TIMEFRAME_M15,"30m": mt5.TIMEFRAME_M30,
                          "1h": mt5.TIMEFRAME_H1,"4h": mt5.TIMEFRAME_H4, "1D": mt5.TIMEFRAME_D1}'''
 logger = logging.getLogger()
+_strategy_print_times = {}
 
 
 def print(*args, **kwargs):
     from app.core.logging_config import log_print
 
+    if len(args) == 1 and isinstance(args[0], dict):
+        row = args[0]
+        if row.get("botcode") and row.get("user") and row.get("status"):
+            now = time.monotonic()
+            key = (
+                str(row.get("user")),
+                str(row.get("botcode")),
+                str(row.get("position")),
+                str(row.get("entry_order_state")),
+                str(row.get("last_broker_order_error")),
+            )
+            if now - _strategy_print_times.get(key, 0) < 30:
+                return
+            _strategy_print_times[key] = now
+            log_print(
+                logger,
+                {
+                    "event": "legacy_strategy_state",
+                    "user": row.get("user"),
+                    "strategy_id": row.get("botcode"),
+                    "botname": row.get("botname"),
+                    "strategy": row.get("strategy"),
+                    "symbol": row.get("symbol"),
+                    "status": row.get("status"),
+                    "position": row.get("position"),
+                    "signal": row.get("decision"),
+                    "live": row.get("live"),
+                    "strategy_broker_field": row.get("broker"),
+                    "entry_order_state": row.get("entry_order_state"),
+                    "last_broker_order_error": row.get("last_broker_order_error"),
+                },
+            )
+            return
     log_print(logger, *args, **kwargs)
 from collections import namedtuple
 
@@ -8151,6 +8186,7 @@ class Exchange:
                 option,
                 exch,
                 optiontoken,
+                user=trade.get("user"),
             )
 
             print(f"option price: {pricesss}")
@@ -8958,6 +8994,7 @@ class Exchange:
                 option,
                 exch,
                 optiontoken,
+                user=trade.get("user"),
             )
 
             print(f"option price: {pricesss}")
@@ -12010,7 +12047,165 @@ class Exchange:
             return price
         return None
 
-    def _get_market_price(self, symbol, exchange=None, token=None):
+    def _get_zerodha_direct_quote_price(
+        self,
+        user,
+        symbol,
+        exchange=None,
+    ):
+        if not user or not exchange:
+            return None
+        if self._selected_broker_for_user(user) != "zerodha":
+            return None
+
+        instrument = f"{str(exchange).strip().upper()}:{str(symbol).strip().upper()}"
+        payload = None
+        client = getattr(self, "zerodha", {}).get(user)
+        try:
+            if client is not None:
+                payload = client.ltp([instrument])
+            else:
+                response = KiteService(self.db).get_ltp(user, [instrument])
+                payload = response.get("data") if isinstance(response, dict) else None
+
+            quote = payload.get(instrument) if isinstance(payload, dict) else None
+            price = self._first_positive_float(
+                quote.get("last_price") if isinstance(quote, dict) else None,
+                quote.get("ltp") if isinstance(quote, dict) else None,
+            )
+            if price is None or self._is_suspicious_option_price(symbol, price):
+                return None
+
+            price = float(price)
+            self.prices[symbol] = price
+            try:
+                MarketPriceRepository(self.db).save_price(
+                    symbol=symbol,
+                    provider="zerodha",
+                    exchange=exchange,
+                    token=instrument,
+                    ltp=price,
+                    force=True,
+                )
+            except Exception:
+                pass
+            trading_event(
+                "market_price_direct_quote",
+                force=True,
+                user=user,
+                broker="zerodha",
+                symbol=symbol,
+                exchange=exchange,
+                price=price,
+                source="kite_ltp",
+            )
+            return price
+        except Exception as exc:
+            trading_exception(
+                "market_price_direct_quote_failed",
+                exc,
+                user=user,
+                broker="zerodha",
+                symbol=symbol,
+                exchange=exchange,
+            )
+            return None
+
+    def _get_upstox_direct_quote_price(
+        self,
+        symbol,
+        exchange=None,
+        token=None,
+    ):
+        access_token = str(
+            AppConfig.UPSTOX_ACCESS_TOKEN
+            or AppConfig.MARKET_FEED_ACCESS_TOKEN
+            or ""
+        ).strip()
+        if not access_token or not exchange or token in (None, ""):
+            return None
+
+        segment_map = {
+            "NFO": "NSE_FO",
+            "BFO": "BSE_FO",
+            "NSE": "NSE_EQ",
+            "BSE": "BSE_EQ",
+            "MCX": "MCX_FO",
+            "MFO": "MCX_FO",
+        }
+        segment = segment_map.get(str(exchange).strip().upper())
+        if not segment:
+            return None
+        instrument_key = f"{segment}|{token}"
+
+        try:
+            import upstox_client
+
+            configuration = upstox_client.Configuration()
+            configuration.access_token = access_token
+            response = upstox_client.MarketQuoteV3Api(
+                upstox_client.ApiClient(configuration)
+            ).get_ltp(instrument_key=instrument_key)
+            payload = response.to_dict() if hasattr(response, "to_dict") else response
+            data = payload.get("data") if isinstance(payload, dict) else None
+            quote = None
+            if isinstance(data, dict):
+                quote = data.get(instrument_key)
+                if quote is None and data:
+                    quote = next(iter(data.values()))
+            price = self._first_positive_float(
+                quote.get("last_price") if isinstance(quote, dict) else None,
+                quote.get("ltp") if isinstance(quote, dict) else None,
+            )
+            if price is None or self._is_suspicious_option_price(symbol, price):
+                return None
+
+            price = float(price)
+            self.prices[symbol] = price
+            try:
+                MarketPriceRepository(self.db).save_price(
+                    symbol=symbol,
+                    provider="upstox",
+                    exchange=exchange,
+                    token=instrument_key,
+                    ltp=price,
+                    force=True,
+                )
+            except Exception:
+                pass
+            trading_event(
+                "market_price_direct_quote",
+                force=True,
+                broker="upstox",
+                symbol=symbol,
+                exchange=exchange,
+                token=instrument_key,
+                price=price,
+                source="upstox_ltp_v3",
+            )
+            return price
+        except Exception as exc:
+            warning_key = ("upstox_direct_quote", instrument_key)
+            now_monotonic = time.monotonic()
+            warning_times = getattr(self, "_price_unavailable_log_times", {})
+            last_warning = warning_times.get(
+                warning_key,
+                0,
+            )
+            if now_monotonic - last_warning >= 30:
+                trading_exception(
+                    "market_price_direct_quote_failed",
+                    exc,
+                    broker="upstox",
+                    symbol=symbol,
+                    exchange=exchange,
+                    token=instrument_key,
+                )
+                warning_times[warning_key] = now_monotonic
+                self._price_unavailable_log_times = warning_times
+            return None
+
+    def _get_market_price(self, symbol, exchange=None, token=None, user=None):
         """Return latest LTP, falling back to the latest candle close."""
         try:
             price_repository = MarketPriceRepository(self.db)
@@ -12068,6 +12263,23 @@ class Exchange:
         if depth_price is not None:
             return depth_price
 
+        if user:
+            zerodha_price = self._get_zerodha_direct_quote_price(
+                user,
+                symbol,
+                exchange,
+            )
+            if zerodha_price is not None:
+                return zerodha_price
+
+            upstox_price = self._get_upstox_direct_quote_price(
+                symbol,
+                exchange,
+                token,
+            )
+            if upstox_price is not None:
+                return upstox_price
+
         quote_price = self._get_direct_quote_price(symbol, exchange, token)
         if quote_price is not None:
             return quote_price
@@ -12088,6 +12300,7 @@ class Exchange:
         symbol,
         exchange=None,
         token=None,
+        user=None,
         timeout_seconds=None,
         poll_interval=0.25,
     ):
@@ -12104,10 +12317,32 @@ class Exchange:
 
         while True:
             try:
+                if user:
+                    return self._get_market_price(
+                        symbol,
+                        exchange,
+                        token,
+                        user=user,
+                    )
                 return self._get_market_price(symbol, exchange, token)
             except KeyError as exc:
                 last_error = exc
             if time.monotonic() >= deadline:
+                trading_event(
+                    "market_price_wait_timeout",
+                    force=True,
+                    user=user,
+                    selected_broker=(
+                        self._selected_broker_for_user(user)
+                        if user
+                        else None
+                    ),
+                    symbol=symbol,
+                    exchange=exchange,
+                    token=token,
+                    timeout_seconds=timeout_seconds,
+                    error=str(last_error or "price unavailable"),
+                )
                 raise last_error or KeyError(f"{symbol} price unavailable")
             time.sleep(min(float(poll_interval), max(0, deadline - time.monotonic())))
 

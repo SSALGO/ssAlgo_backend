@@ -40,6 +40,12 @@ class KiteService:
     def api_key(self):
         return str(AppConfig.KITE_API_KEY or "").strip()
 
+    def api_key_for_user(self, user):
+        if self.api_key:
+            return self.api_key
+        row = self.connection_row(user)
+        return str(row.get("apiKey") or row.get("api_key") or "").strip()
+
     @property
     def api_secret(self):
         return str(AppConfig.KITE_API_SECRET or "").strip()
@@ -191,9 +197,12 @@ class KiteService:
         trading_event("kite_token_expired", broker="zerodha", user=user, force=True)
 
     def headers(self, user, *, require_valid=True):
+        api_key = self.api_key_for_user(user)
+        if not api_key:
+            raise KiteError("Kite API key is missing. Please reconnect Kite.")
         return {
             "X-Kite-Version": "3",
-            "Authorization": f"token {self.api_key}:{self.access_token(user, require_valid=require_valid)}",
+            "Authorization": f"token {api_key}:{self.access_token(user, require_valid=require_valid)}",
         }
 
     def request(self, method, path, user, **kwargs):
@@ -211,8 +220,28 @@ class KiteService:
             body = response.json()
         except ValueError:
             body = {"status": "error", "message": f"Kite returned non-JSON response ({response.status_code})"}
-        if response.status_code in {403, 401}:
-            self.mark_token_expired(user, body.get("message") or "Kite token rejected. Please reconnect Kite.")
+        error_text = " ".join(
+            str((body or {}).get(key) or "")
+            for key in ("message", "error_type")
+        ).lower()
+        token_rejected = response.status_code == 401 or (
+            response.status_code == 403
+            and any(
+                marker in error_text
+                for marker in (
+                    "token",
+                    "session",
+                    "login",
+                    "authentication",
+                    "invalid api_key",
+                )
+            )
+        )
+        if token_rejected:
+            self.mark_token_expired(
+                user,
+                body.get("message") or "Kite token rejected. Please reconnect Kite.",
+            )
         return body, response.status_code, latency_ms
 
     def get_profile(self, user):
@@ -233,6 +262,20 @@ class KiteService:
 
     def get_positions(self, user):
         body, _status, _latency = self.request("GET", "/portfolio/positions", user)
+        return body
+
+    def get_ltp(self, user, instruments):
+        instrument_list = [
+            str(instrument or "").strip()
+            for instrument in instruments or []
+            if str(instrument or "").strip()
+        ]
+        body, _status, _latency = self.request(
+            "GET",
+            "/quote/ltp",
+            user,
+            params=[("i", instrument) for instrument in instrument_list],
+        )
         return body
 
     def get_holdings(self, user):

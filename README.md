@@ -134,7 +134,7 @@ date, the backend marks the broker token as expired and rejects live orders with
 Daily instrument sync:
 
 ```bash
-.\venv\Scripts\python.exe scripts\sync_kite_instruments.py
+.\venv\Scripts\python.exe scripts\operations\sync_kite_instruments.py
 ```
 
 Run this before market open from your scheduler/cron so strategies can resolve

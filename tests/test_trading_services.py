@@ -25,6 +25,7 @@ from app.domain.risk.service import RiskControlService
 from app.workers.trading_worker import TradingWorker
 from app.core.logging_config import sanitize_log_value
 from app.core.secrets import decrypt_secret, encrypt_secret
+from app.api.legacy_compat.strategies import _strategy_price_required_now
 from connectors.connector import AliceBlueTradeHubAdapter, Exchange, strategy_market_window
 from models import EMA_fut_mode, EMA_mode, SSTRIKE_mode
 
@@ -86,6 +87,24 @@ def test_strategy_market_window_rejects_utc_time_after_india_close():
 
     assert window["market_time"] == datetime.time(15, 30)
     assert window["intraday"] is False
+
+
+def test_live_start_does_not_require_price_before_strategy_window():
+    strategy = {"StartTime": "09:15", "ExitTime": "15:20"}
+    pre_market_utc = datetime.datetime(
+        2026, 6, 18, 1, 0, tzinfo=datetime.UTC
+    )
+
+    assert _strategy_price_required_now(strategy, now=pre_market_utc) is False
+
+
+def test_live_start_requires_price_during_strategy_window():
+    strategy = {"StartTime": "09:15", "ExitTime": "15:20"}
+    market_utc = datetime.datetime(
+        2026, 6, 18, 5, 0, tzinfo=datetime.UTC
+    )
+
+    assert _strategy_price_required_now(strategy, now=market_utc) is True
 
 
 def test_expiry_selection_ignores_expired_contract_dates():

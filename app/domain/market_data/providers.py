@@ -53,6 +53,7 @@ class UpstoxFeedProvider(FeedProvider):
         self._thread = None
         self._instrument_symbols = {}
         self._subscribed_keys = []
+        self._open_event = threading.Event()
 
     def _access_token(self):
         return str(
@@ -120,8 +121,8 @@ class UpstoxFeedProvider(FeedProvider):
             self.streamer = streamer_class(self.client)
 
         self._register_callbacks(self.streamer)
-        self.connected = True
         self.last_error = ""
+        self._open_event.clear()
 
         self._thread = threading.Thread(
             target=self._run_streamer,
@@ -129,6 +130,12 @@ class UpstoxFeedProvider(FeedProvider):
             daemon=True,
         )
         self._thread.start()
+        timeout = float(os.getenv("SSLAGO_MARKET_FEED_CONNECT_TIMEOUT_SECONDS", "10"))
+        if not self._open_event.wait(timeout):
+            self.connected = False
+            if self.last_error:
+                raise RuntimeError(f"Upstox live market feed failed: {self.last_error}")
+            raise RuntimeError("Upstox live market feed websocket did not open")
         return {"connected": True, "provider": self.name, "threaded": True}
 
     def _register_callbacks(self, streamer):
@@ -155,15 +162,18 @@ class UpstoxFeedProvider(FeedProvider):
     def _mark_open(self, *_args, **_kwargs):
         self.connected = True
         self.last_error = ""
+        self._open_event.set()
         if self._subscribed_keys:
             self._subscribe_streamer(self._subscribed_keys)
 
     def _mark_closed(self, *_args, **_kwargs):
         self.connected = False
+        self._open_event.clear()
 
     def _mark_error(self, error, *_args, **_kwargs):
         self.connected = False
         self.last_error = str(error)
+        self._open_event.set()
 
     def _subscribe_streamer(self, instrument_keys):
         if not self.streamer or not instrument_keys:
@@ -175,6 +185,16 @@ class UpstoxFeedProvider(FeedProvider):
             subscribe(instrument_keys, "full")
         except TypeError:
             subscribe("full", instrument_keys)
+        except Exception as exc:
+            if "not open" in str(exc).lower():
+                trading_event(
+                    "market_feed_subscribe_deferred",
+                    provider=self.name,
+                    instrument_tokens=sorted(instrument_keys),
+                    reason=str(exc),
+                )
+                return []
+            raise
         return sorted(instrument_keys)
 
     def subscribe(self, symbols):

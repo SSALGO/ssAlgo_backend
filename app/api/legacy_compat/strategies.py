@@ -1,5 +1,6 @@
 import os
 import time
+import datetime
 
 from app.api.legacy_compat.common import *
 from app.core.config import AppConfig
@@ -14,6 +15,32 @@ def _strategy_symbols(strategy):
     if isinstance(symbols, str):
         symbols = [symbols]
     return sorted({str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()})
+
+
+def _strategy_price_required_now(strategy, now=None):
+    """Require a fresh tick only while the strategy can currently execute."""
+    india_timezone = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+    if now is None:
+        now = datetime.datetime.now(datetime.UTC).astimezone(india_timezone)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=india_timezone)
+    else:
+        now = now.astimezone(india_timezone)
+    if now.weekday() >= 5:
+        return False
+    try:
+        start_time = datetime.datetime.strptime(
+            str(strategy.get("StartTime") or ""),
+            "%H:%M",
+        ).time()
+        exit_time = datetime.datetime.strptime(
+            str(strategy.get("ExitTime") or ""),
+            "%H:%M",
+        ).time()
+    except (TypeError, ValueError):
+        return True
+    current_time = now.time().replace(tzinfo=None)
+    return start_time < current_time < exit_time
 
 
 def api_strategys(_admin=Depends(require_admin)):
@@ -223,7 +250,8 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
             strategy_symbols,
             provider=feed_provider,
         )
-        if not price_status.get("ready") and feed_result.get("success"):
+        price_required_now = _strategy_price_required_now(strategy)
+        if price_required_now and not price_status.get("ready") and feed_result.get("success"):
             deadline = time.monotonic() + float(os.getenv("SSLAGO_MARKET_FEED_WARMUP_SECONDS", "3"))
             while time.monotonic() < deadline:
                 time.sleep(0.2)
@@ -240,13 +268,23 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
             live_blockers.append("Broker login is not connected")
         if feed_health.get("status") != "connected" and feed_health.get("connected") is not True:
             live_blockers.append("Market feed is not connected")
-        if not price_status.get("ready"):
+        if price_required_now and not price_status.get("ready"):
             missing = ", ".join(price_status.get("missing") or [])
             stale = ", ".join(price_status.get("stale") or [])
             if missing:
                 live_blockers.append(f"Market feed price missing for {missing}")
             if stale:
                 live_blockers.append(f"Market feed price stale for {stale}")
+        elif not price_required_now and not price_status.get("ready"):
+            trading_event(
+                "market_feed_price_pending",
+                user=username,
+                strategy_id=botcode,
+                provider=feed_provider,
+                symbols=strategy_symbols,
+                market_price_status=price_status,
+                reason="outside_strategy_window",
+            )
         if live_blockers:
             trading_event(
                 "strategy_start_rejected",
@@ -259,6 +297,7 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
                 market_feed_result=feed_result,
                 market_feed_health=feed_health,
                 market_price_status=price_status,
+                price_required_now=price_required_now,
                 blockers=live_blockers,
             )
             raise HTTPException(

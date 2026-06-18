@@ -66,6 +66,47 @@ def _log_position_recovery_state(db):
     )
 
 
+def _repair_closed_strategies_without_positions(db):
+    repaired = []
+    for strategy in db["strategies"].find(
+        {"status": "closed", "position": "in"},
+        {"botcode": 1, "user": 1, "entry_order_state": 1},
+    ):
+        if strategy.get("entry_order_state") == "attempted":
+            continue
+        query = {
+            "botcode": strategy.get("botcode"),
+            "user": strategy.get("user"),
+            "status": "open",
+        }
+        if db["Opositions"].count_documents(query, limit=1):
+            continue
+        db["strategies"].update_one(
+            {"_id": strategy["_id"], "status": "closed", "position": "in"},
+            {
+                "$set": {"position": "out"},
+                "$unset": {
+                    "entry_order_state": "",
+                    "entry_order_time": "",
+                    "last_broker_order_error": "",
+                    "last_broker_order_error_time": "",
+                },
+            },
+        )
+        repaired.append({
+            "user": strategy.get("user"),
+            "botcode": strategy.get("botcode"),
+        })
+    if repaired:
+        logger.warning(
+            "Position recovery repaired %s closed strategy row(s) without "
+            "open positions: %s",
+            len(repaired),
+            repaired[:25],
+        )
+    return repaired
+
+
 def _mongo_identity():
     parsed = urlsplit(AppConfig.MONGO_URI)
     return {
@@ -119,6 +160,7 @@ def main():
         process="trading_worker_main",
         force=True,
     )
+    _repair_closed_strategies_without_positions(db)
     _log_position_recovery_state(db)
     worker = TradingWorker(db=db, health_service=BrokerHealthService(db))
     strategy_runtime = None

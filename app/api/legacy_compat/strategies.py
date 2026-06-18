@@ -321,9 +321,28 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
                 },
             )
 
+    start_update = fractal_reset_update(
+        botcode,
+        username,
+        {"status": "opened"},
+    )
+    failed_entry_state = strategy.get("entry_order_state") in {
+        "broker_failed",
+        "preflight_failed",
+    }
+    if strategy.get("position") != "in" and failed_entry_state:
+        start_update.setdefault("$set", {})["position"] = "out"
+        start_update.setdefault("$unset", {}).update({
+            "entry_order_state": "",
+            "entry_order_time": "",
+            "last_broker_order_error": "",
+            "last_broker_order_error_time": "",
+            "state_repair_reason": "",
+            "state_repair_time": "",
+        })
     result = collection("strategies").update_one(
         {"botcode": botcode, "user": username},
-        fractal_reset_update(botcode, username, {"status": "opened"}),
+        start_update,
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")

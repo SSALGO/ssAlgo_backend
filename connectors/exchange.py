@@ -8180,6 +8180,15 @@ class Exchange:
                 )
 
                 broker = broker_info['selectedbroker']
+                trading_event(
+                    "broker_order_route_selected",
+                    force=True,
+                    user=trade.get("user"),
+                    strategy_id=trade.get("botcode"),
+                    broker=broker,
+                    action="BUY",
+                    symbol=option,
+                )
 
                 qty = int(optionlot) * int(trade['lot'])
 
@@ -8975,6 +8984,15 @@ class Exchange:
                 )
 
                 broker = broker_info['selectedbroker']
+                trading_event(
+                    "broker_order_route_selected",
+                    force=True,
+                    user=trade.get("user"),
+                    strategy_id=trade.get("botcode"),
+                    broker=broker,
+                    action="SELL",
+                    symbol=option,
+                )
 
                 lot = int(trade['lot'])
 
@@ -9914,9 +9932,31 @@ class Exchange:
     def _selected_broker_for_user(self, user):
         try:
             broker_info = self.broker_collection.find_one({'user': user}) or {}
-            return broker_info.get('selectedbroker')
+            return str(
+                broker_info.get('selectedbroker')
+                or broker_info.get('selected_broker')
+                or ''
+            ).strip().lower()
         except Exception:
             return None
+
+    def _assert_selected_broker(self, user, expected_broker):
+        selected_broker = self._selected_broker_for_user(user)
+        expected_broker = str(expected_broker or '').strip().lower()
+        if selected_broker != expected_broker:
+            trading_event(
+                "broker_order_route_blocked",
+                force=True,
+                user=user,
+                selected_broker=selected_broker,
+                attempted_broker=expected_broker,
+                reason="selected_broker_changed",
+            )
+            raise RuntimeError(
+                f"Order broker changed: selected broker is "
+                f"{selected_broker or 'not configured'}, not {expected_broker}"
+            )
+        return selected_broker
 
     def _aliceblue_user_verified_today(self, user):
         try:
@@ -10244,6 +10284,7 @@ class Exchange:
         self, user, transaction_type, instrument, quantity, product_type,
         symbol, exch=None, optiontoken=None, order_tag='order1'
     ):
+        self._assert_selected_broker(user, 'aliceblue')
         limit_price, price_context = self._aliceblue_limit_price(transaction_type, symbol, exch, optiontoken)
         side = str(getattr(transaction_type, 'value', transaction_type)).upper()
         if price_context:
@@ -10667,6 +10708,7 @@ class Exchange:
     def _place_aliceblue_market_order(
         self, user, transaction_type, instrument, quantity, product_type, order_tag='order1'
     ):
+        self._assert_selected_broker(user, 'aliceblue')
         return self.alice[user].place_order(
             transaction_type=transaction_type,
             instrument=instrument,
@@ -10686,6 +10728,7 @@ class Exchange:
         self, user, transaction_type, quantity, product_type, symbol,
         exch=None, optiontoken=None, order_tag='order1'
     ):
+        self._assert_selected_broker(user, 'aliceblue')
         side = str(getattr(transaction_type, 'value', transaction_type)).upper()
         duplicate, duplicate_data = self._has_recent_broker_order(user, symbol, side)
         if duplicate:

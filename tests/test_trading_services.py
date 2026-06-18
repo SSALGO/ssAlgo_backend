@@ -23,6 +23,7 @@ from app.domain.readiness.service import LiveReadinessService
 from app.domain.reconciliation.service import BrokerReconciliationService
 from app.domain.risk.service import RiskControlService
 from app.workers.trading_worker import TradingWorker
+from app.workers.trading_worker_main import _repair_closed_strategies_without_positions
 from app.core.logging_config import sanitize_log_value
 from app.core.secrets import decrypt_secret, encrypt_secret
 from app.api.legacy_compat.strategies import _strategy_price_required_now
@@ -655,6 +656,94 @@ def test_market_price_repository_throttles_db_writes_but_returns_latest_cache(fa
 
     assert saved["ltp"] == 24100.0
     assert latest["ltp"] == 24105.5
+
+
+def test_aliceblue_entry_is_blocked_when_user_selected_zerodha(fake_db):
+    exchange = Exchange.__new__(Exchange)
+    exchange.broker_collection = fake_db["broker"]
+    fake_db["broker"].insert_one({
+        "user": "sjguptha",
+        "selectedbroker": "zerodha",
+    })
+
+    with pytest.raises(RuntimeError, match="selected broker is zerodha"):
+        exchange._place_aliceblue_limit_order(
+            user="sjguptha",
+            transaction_type="BUY",
+            instrument={"exchange": "NFO", "token": 12345},
+            quantity=65,
+            product_type="NRML",
+            symbol="NIFTY26JUN26C23600",
+            exch="NFO",
+            optiontoken=12345,
+        )
+
+    with pytest.raises(RuntimeError, match="selected broker is zerodha"):
+        exchange._place_aliceblue_square_off(
+            user="sjguptha",
+            transaction_type="SELL",
+            quantity=65,
+            product_type="NRML",
+            symbol="NIFTY26JUN26C23600",
+            exch="NFO",
+            optiontoken=12345,
+        )
+
+
+def test_worker_recovery_repairs_closed_strategy_without_open_position(fake_db):
+    fake_db["strategies"].insert_one({
+        "user": "alice",
+        "botcode": "CLOSED-STALE",
+        "status": "closed",
+        "position": "in",
+        "entry_order_state": "broker_failed",
+        "last_broker_order_error": "old failure",
+    })
+
+    repaired = _repair_closed_strategies_without_positions(fake_db)
+    strategy = fake_db["strategies"].find_one({"botcode": "CLOSED-STALE"})
+
+    assert repaired == [{"user": "alice", "botcode": "CLOSED-STALE"}]
+    assert strategy["position"] == "out"
+    assert "entry_order_state" not in strategy
+    assert "last_broker_order_error" not in strategy
+
+
+def test_worker_recovery_preserves_closed_strategy_with_open_position(fake_db):
+    fake_db["strategies"].insert_one({
+        "user": "alice",
+        "botcode": "CLOSED-EXITING",
+        "status": "closed",
+        "position": "in",
+    })
+    fake_db["Opositions"].insert_one({
+        "user": "alice",
+        "botcode": "CLOSED-EXITING",
+        "status": "open",
+    })
+
+    repaired = _repair_closed_strategies_without_positions(fake_db)
+    strategy = fake_db["strategies"].find_one({"botcode": "CLOSED-EXITING"})
+
+    assert repaired == []
+    assert strategy["position"] == "in"
+
+
+def test_worker_recovery_preserves_attempted_order_for_reconciliation(fake_db):
+    fake_db["strategies"].insert_one({
+        "user": "alice",
+        "botcode": "CLOSED-ATTEMPTED",
+        "status": "closed",
+        "position": "in",
+        "entry_order_state": "attempted",
+    })
+
+    repaired = _repair_closed_strategies_without_positions(fake_db)
+    strategy = fake_db["strategies"].find_one({"botcode": "CLOSED-ATTEMPTED"})
+
+    assert repaired == []
+    assert strategy["position"] == "in"
+    assert strategy["entry_order_state"] == "attempted"
 
 
 def test_option_quote_wait_allows_websocket_tick_to_arrive():
@@ -1653,6 +1742,8 @@ def test_live_readiness_requires_burn_in_broker_and_risk(fake_db):
     result = service.check_user("alice", min_orders=1, min_days=2)
     assert result["ready"] is False
     assert "paper_burn_in" in result["missing"]
+    assert "worker_running" in result["missing"]
+    assert "market_feed_connected" in result["missing"]
 
     fake_db["normalized_orders"].insert_one({
         "user": "alice",
@@ -1663,6 +1754,17 @@ def test_live_readiness_requires_burn_in_broker_and_risk(fake_db):
     fake_db["broker"].insert_one({"user": "alice", "selectedbroker": "dhan"})
     fake_db["broker_health"].insert_one({"user": "alice", "broker": "dhan", "login_status": "connected"})
     fake_db["risk_settings"].insert_one({"user": "alice", "kill_switch": False})
+    fake_db["worker_status"].insert_one({
+        "name": "trading_worker",
+        "state": "running",
+        "heartbeat_at": datetime.datetime.now(datetime.UTC),
+    })
+    fake_db["market_feed_health"].insert_one({
+        "provider": "__global__",
+        "status": "connected",
+        "connected": True,
+        "active_provider": "upstox",
+    })
 
     result = service.check_user("alice", min_orders=1, min_days=2)
     assert result["ready"] is True

@@ -596,6 +596,41 @@ def test_market_price_uses_active_fallback_provider(fake_db):
     assert price == 24102.5
 
 
+def test_market_price_uses_fresh_feed_when_global_provider_is_stale(fake_db):
+    from app.domain.market_data import MarketPriceRepository
+
+    exchange = Exchange.__new__(Exchange)
+    exchange.db = fake_db
+    exchange.prices = {}
+    exchange.sprices = {}
+    exchange.dataframes = {}
+    exchange.api = None
+    exchange.market_depth_max_age_seconds = 3
+    exchange.market_depths = {}
+    repository = MarketPriceRepository(fake_db)
+    repository.update_global_health(
+        connected=True,
+        status="connected",
+        active_provider="zerodha",
+        provider_chain=["upstox", "aliceblue", "zerodha"],
+        failed_providers=["upstox", "aliceblue"],
+    )
+    repository.save_price(
+        symbol="NIFTY",
+        exchange="NSE_INDEX",
+        token="NSE_INDEX|Nifty 50",
+        provider="upstox",
+        ltp=24126.9,
+    )
+
+    price_status = repository.has_fresh_prices(["NIFTY"], provider=None)
+    price = exchange._get_market_price("NIFTY")
+
+    assert price_status["ready"] is True
+    assert price_status["providers"] == {"NIFTY": "upstox"}
+    assert price == 24126.9
+
+
 def test_market_price_repository_throttles_db_writes_but_returns_latest_cache(fake_db):
     from app.domain.market_data import MarketPriceRepository
 

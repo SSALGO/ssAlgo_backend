@@ -161,6 +161,7 @@ class MarketPriceRepository:
     def has_fresh_prices(self, symbols, provider=None):
         missing = []
         stale = []
+        providers = {}
         for symbol in sorted({str(item or "").strip().upper() for item in symbols or [] if str(item or "").strip()}):
             row = self.latest_price(symbol=symbol, provider=provider, require_fresh=False)
             if not row:
@@ -169,10 +170,13 @@ class MarketPriceRepository:
             stale_after = _as_aware(row.get("stale_after")) if row.get("stale_after") else None
             if stale_after and stale_after < utcnow():
                 stale.append(symbol)
+                continue
+            providers[symbol] = str(row.get("provider") or "").strip().lower()
         return {
             "ready": not missing and not stale,
             "missing": missing,
             "stale": stale,
+            "providers": providers,
         }
 
     def update_health(self, provider, **fields):

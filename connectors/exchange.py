@@ -11971,13 +11971,29 @@ class Exchange:
         """Return latest LTP, falling back to the latest candle close."""
         try:
             price_repository = MarketPriceRepository(self.db)
+            active_provider = price_repository.active_provider() or AppConfig.MARKET_FEED_PROVIDER
             row = price_repository.latest_price(
                 symbol=symbol,
                 exchange=exchange,
                 token=token,
-                provider=price_repository.active_provider() or AppConfig.MARKET_FEED_PROVIDER,
+                provider=active_provider,
                 require_fresh=True,
             )
+            if row is None:
+                row = price_repository.latest_price(
+                    symbol=symbol,
+                    exchange=exchange,
+                    token=token,
+                    provider=None,
+                    require_fresh=True,
+                )
+                if row:
+                    trading_event(
+                        "market_price_provider_fallback",
+                        symbol=symbol,
+                        active_provider=active_provider,
+                        price_provider=row.get("provider"),
+                    )
             if row:
                 price = self._first_positive_float(row.get('ltp'))
                 if price is None:

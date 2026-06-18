@@ -236,11 +236,6 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
         )
         strategy_symbols = _strategy_symbols(strategy)
         price_repository = MarketPriceRepository(db)
-        feed_result = MarketFeedManager(db).ensure_symbols(
-            strategy_symbols,
-            user=username,
-            broker=selected_broker,
-        )
         feed_health = price_repository.get_global_health()
         feed_provider = (
             feed_health.get("active_provider")
@@ -248,8 +243,25 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
         )
         price_status = price_repository.has_fresh_prices(
             strategy_symbols,
-            provider=feed_provider,
+            provider=None,
         )
+        feed_result = {
+            "success": price_status.get("ready", False),
+            "provider": next(iter(price_status.get("providers", {}).values()), feed_provider),
+            "status": "connected" if price_status.get("ready") else "pending",
+            "message": "Using existing shared market prices" if price_status.get("ready") else "Market feed warmup required",
+        }
+        if not price_status.get("ready"):
+            feed_result = MarketFeedManager(db).ensure_symbols(
+                strategy_symbols,
+                user=username,
+                broker=selected_broker,
+            )
+            feed_health = price_repository.get_global_health()
+            feed_provider = (
+                feed_health.get("active_provider")
+                or AppConfig.MARKET_FEED_PROVIDER
+            )
         price_required_now = _strategy_price_required_now(strategy)
         if price_required_now and not price_status.get("ready") and feed_result.get("success"):
             deadline = time.monotonic() + float(os.getenv("SSLAGO_MARKET_FEED_WARMUP_SECONDS", "3"))
@@ -257,7 +269,7 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
                 time.sleep(0.2)
                 price_status = price_repository.has_fresh_prices(
                     strategy_symbols,
-                    provider=feed_provider,
+                    provider=None,
                 )
                 if price_status.get("ready"):
                     break

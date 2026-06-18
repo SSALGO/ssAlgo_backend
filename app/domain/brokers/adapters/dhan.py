@@ -1,3 +1,11 @@
+import datetime
+
+from app.domain.brokers.dhan import (
+    DhanError,
+    DhanService,
+    canonicalize_dhan_credentials,
+)
+
 from .live_base import NormalizedLiveBrokerAdapter
 
 
@@ -18,83 +26,263 @@ class DhanBrokerAdapter(NormalizedLiveBrokerAdapter):
         "CDS": "NSE_CURRENCY",
         "CDSFO": "NSE_CURRENCY",
     }
+    ORDER_TYPES = {
+        "MARKET": "MARKET",
+        "LIMIT": "LIMIT",
+        "SL": "STOP_LOSS",
+        "STOP_LOSS": "STOP_LOSS",
+        "SL-M": "STOP_LOSS_MARKET",
+        "SLM": "STOP_LOSS_MARKET",
+        "STOP_LOSS_MARKET": "STOP_LOSS_MARKET",
+    }
+    PRODUCT_TYPES = {
+        "INTRADAY": "INTRADAY",
+        "MIS": "INTRADAY",
+        "CNC": "CNC",
+        "DELIVERY": "CNC",
+        "MARGIN": "MARGIN",
+        "NORMAL": "MARGIN",
+        "NRML": "MARGIN",
+    }
+
+    def __init__(self, *args, service_class=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.service_class = service_class or DhanService
+        self.service = None
 
     def _load_credentials(self, credentials):
-        return self.load_credentials(credentials)
+        values = self.load_credentials(credentials)
+        canonical = canonicalize_dhan_credentials(values)
+        if not canonical["dhanClientId"] or not canonical["accessToken"]:
+            raise DhanError(
+                "missing_credentials",
+                "Dhan Client ID and access token are required.",
+            )
+        self.credentials = {**values, **canonical}
+        return self.credentials
 
-    def _normalize_response(self, action, response, broker_order_id=None):
-        return self.normalize_response(action, response, broker_order_id=broker_order_id)
+    @staticmethod
+    def _error_result(action, exc, broker_order_id=None):
+        return {
+            "success": False,
+            "broker": "dhan",
+            "action": action,
+            "status": "rejected",
+            "message": str(exc),
+            "error": exc.to_dict() if isinstance(exc, DhanError) else {
+                "category": "unexpected_error",
+                "message": str(exc),
+                "retryable": False,
+                "token_invalid": False,
+            },
+            "broker_order_id": str(broker_order_id) if broker_order_id else None,
+        }
+
+    def _update_error_health(self, user, exc):
+        if not self.health_service:
+            return
+        fields = {
+            "login_status": "rejected",
+            "last_error": str(exc),
+        }
+        if isinstance(exc, DhanError) and exc.token_invalid:
+            fields["token_status"] = "expired" if "expired" in str(exc).lower() else "invalid"
+        self.health_service.update_health(user, self.broker_name, **fields)
+
+    def verify_connection(self, credentials):
+        values = self._load_credentials(credentials)
+        try:
+            self.service = self.service_class(
+                values["dhanClientId"],
+                values["accessToken"],
+            )
+            self.client = self.service
+            result = self.service.verify_connection()
+        except DhanError as exc:
+            self._update_error_health(credentials.user, exc)
+            raise
+
+        now = datetime.datetime.now(datetime.UTC)
+        if self.health_service:
+            self.health_service.update_health(
+                credentials.user,
+                self.broker_name,
+                login_status="connected",
+                token_status="valid",
+                token_expires_at=result.get("token_expires_at"),
+                connected_at=now,
+                last_verified_at=now,
+                last_error="",
+            )
+        return {
+            **result,
+            "status": "connected",
+        }
 
     def login(self, credentials):
-        values = self._load_credentials(credentials)
-        client_id = str(values.get("client_id") or "").strip()
-        access_token = str(values.get("access_token") or "").strip()
-        if not client_id or not access_token:
-            raise ValueError("Dhan client_id and access_token are required")
-        try:
-            from dhanhq import dhanhq
-        except ImportError as exc:
-            raise ImportError("dhanhq package is required for Dhan live trading") from exc
+        return self.verify_connection(credentials)
 
-        self.credentials = values
-        self.client = dhanhq(client_id, access_token)
-        response = self.client.get_fund_limits()
-        normalized = self._normalize_response("login", response)
-        normalized["status"] = "connected" if normalized["success"] else "rejected"
-        self.update_login_health(credentials.user, normalized["success"], normalized["message"])
-        return normalized
+    def client_or_login(self, user):
+        if self.service is None:
+            self.login(
+                type(
+                    "Credentials",
+                    (),
+                    {"user": user, "broker": self.broker_name, "values": {}},
+                )()
+            )
+        return self.service
 
     def _exchange_segment(self, exchange):
-        return self.EXCHANGE_SEGMENTS.get(str(exchange or "").upper(), exchange or "NSE_FNO")
+        value = str(exchange or "").strip().upper()
+        return self.EXCHANGE_SEGMENTS.get(value, value or "NSE_FNO")
+
+    def _order_type(self, value):
+        normalized = str(value or "MARKET").strip().upper()
+        if normalized not in self.ORDER_TYPES:
+            raise ValueError(f"Unsupported Dhan order type: {normalized}")
+        return self.ORDER_TYPES[normalized]
+
+    def _product_type(self, value):
+        normalized = str(value or "INTRADAY").strip().upper()
+        if normalized not in self.PRODUCT_TYPES:
+            raise ValueError(f"Unsupported Dhan product type: {normalized}")
+        return self.PRODUCT_TYPES[normalized]
+
+    @staticmethod
+    def _safe_order_context(payload):
+        return {
+            key: payload.get(key)
+            for key in (
+                "correlationId",
+                "transactionType",
+                "exchangeSegment",
+                "productType",
+                "orderType",
+                "validity",
+                "securityId",
+                "quantity",
+            )
+            if payload.get(key) not in (None, "")
+        }
+
+    def _order_payload(self, order):
+        metadata = dict(order.metadata or {})
+        security_id = (
+            metadata.get("security_id")
+            or metadata.get("securityId")
+            or metadata.get("optiontoken")
+            or metadata.get("token")
+        )
+        if not security_id:
+            raise ValueError("Dhan order requires security_id in metadata")
+        idempotency_key = str(
+            metadata.get("idempotency_key")
+            or metadata.get("correlationId")
+            or ""
+        ).strip()
+        if not idempotency_key:
+            raise ValueError("Dhan live order requires an idempotency key")
+        return {
+            "dhanClientId": self.credentials["dhanClientId"],
+            "correlationId": idempotency_key[:25],
+            "transactionType": str(order.side or "").strip().upper(),
+            "exchangeSegment": self._exchange_segment(
+                order.exchange
+                or metadata.get("exchange")
+                or metadata.get("exch")
+            ),
+            "productType": self._product_type(
+                order.product_type
+                or metadata.get("product_type")
+            ),
+            "orderType": self._order_type(order.order_type),
+            "validity": str(metadata.get("validity") or "DAY").strip().upper(),
+            "securityId": str(security_id),
+            "quantity": int(order.quantity),
+            "disclosedQuantity": int(metadata.get("disclosed_quantity") or 0),
+            "price": float(order.price or 0),
+            "triggerPrice": float(
+                metadata.get("trigger_price")
+                or metadata.get("triggerPrice")
+                or 0
+            ),
+            "afterMarketOrder": bool(metadata.get("after_market_order") or False),
+            "amoTime": str(metadata.get("amo_time") or "OPEN").strip().upper(),
+            "boProfitValue": float(metadata.get("bo_profit_value") or 0),
+            "boStopLossValue": float(
+                metadata.get("bo_stop_loss_value")
+                or metadata.get("bo_stop_loss_Value")
+                or 0
+            ),
+        }
 
     def place_order(self, order):
         self.check_risk(order, mode="live")
-        client = self.client_or_login(order.user)
-        metadata = dict(order.metadata or {})
-        security_id = metadata.get("security_id") or metadata.get("optiontoken") or metadata.get("token")
-        if not security_id:
-            raise ValueError("Dhan order requires security_id, optiontoken, or token in metadata")
-        response = client.place_order(
-            security_id=str(security_id),
-            exchange_segment=self._exchange_segment(order.exchange or metadata.get("exchange") or metadata.get("exch")),
-            transaction_type=str(order.side).upper(),
-            quantity=int(order.quantity),
-            order_type=str(order.order_type or "MARKET").upper(),
-            product_type=str(order.product_type or metadata.get("product_type") or "MARGIN").upper(),
-            price=float(order.price or 0),
-            trigger_price=float(metadata.get("trigger_price") or 0),
-            disclosed_quantity=int(metadata.get("disclosed_quantity") or 0),
-            after_market_order=bool(metadata.get("after_market_order") or False),
-            validity=metadata.get("validity") or "DAY",
-            amo_time=metadata.get("amo_time") or "OPEN",
-            bo_profit_value=metadata.get("bo_profit_value"),
-            bo_stop_loss_Value=metadata.get("bo_stop_loss_Value"),
-            tag=metadata.get("tag"),
+        service = self.client_or_login(order.user)
+        payload = self._order_payload(order)
+        try:
+            normalized = service.place_order(payload)
+        except DhanError as exc:
+            normalized = self._error_result("place_order", exc)
+            if exc.token_invalid:
+                self._update_error_health(order.user, exc)
+        return self.record_order_result(
+            order,
+            normalized,
+            raw_request=self._safe_order_context(payload),
         )
-        normalized = self._normalize_response("place_order", response)
-        return self.record_order_result(order, normalized, raw_request=metadata)
+
+    def modify_order(self, user, order_id, values):
+        service = self.client_or_login(user)
+        payload = dict(values or {})
+        payload["dhanClientId"] = self.credentials["dhanClientId"]
+        payload["orderId"] = str(order_id)
+        try:
+            return service.modify_order(order_id, payload)
+        except DhanError as exc:
+            if exc.token_invalid:
+                self._update_error_health(user, exc)
+            return self._error_result("modify_order", exc, broker_order_id=order_id)
 
     def cancel_order(self, user, order_id):
-        client = self.client_or_login(user)
-        response = client.cancel_order(order_id)
-        normalized = self._normalize_response("cancel_order", response, broker_order_id=order_id)
-        if self.order_lifecycle and normalized["success"]:
-            self.order_lifecycle.transition(order_id, "cancelled", normalized)
-        return normalized
+        service = self.client_or_login(user)
+        try:
+            return service.cancel_order(order_id)
+        except DhanError as exc:
+            if exc.token_invalid:
+                self._update_error_health(user, exc)
+            return self._error_result("cancel_order", exc, broker_order_id=order_id)
+
+    def get_profile(self, user):
+        return self.client_or_login(user).get_profile()
+
+    def get_funds(self, user):
+        return self.client_or_login(user).get_funds()
+
+    def get_positions(self, user):
+        return self.client_or_login(user).get_positions()
+
+    def get_holdings(self, user):
+        return self.client_or_login(user).get_holdings()
+
+    def get_orderbook(self, user):
+        return self.client_or_login(user).get_orderbook()
 
     def positions(self, user):
-        return self._normalize_response("positions", self.client_or_login(user).get_positions())
+        return self.get_positions(user)
 
     def funds(self, user):
-        return self._normalize_response("funds", self.client_or_login(user).get_fund_limits())
+        return self.get_funds(user)
 
     def quote(self, symbol, **kwargs):
-        client = self.client_or_login(kwargs.get("user") or "")
-        security_id = kwargs.get("security_id") or kwargs.get("token")
-        exchange_segment = self._exchange_segment(kwargs.get("exchange"))
-        if hasattr(client, "ticker_data") and security_id:
-            return self._normalize_response("quote", client.ticker_data(exchange_segment, str(security_id)))
-        return {"success": False, "broker": self.broker_name, "action": "quote", "message": "Dhan quote requires security_id"}
+        return {
+            "success": False,
+            "broker": self.broker_name,
+            "action": "quote",
+            "symbol": symbol,
+            "message": "Dhan quote is not part of this execution-only integration.",
+        }
 
     def subscribe(self, symbols, **kwargs):
         return {
@@ -102,5 +290,5 @@ class DhanBrokerAdapter(NormalizedLiveBrokerAdapter):
             "broker": self.broker_name,
             "action": "subscribe",
             "symbols": list(symbols or []),
-            "message": "Dhan websocket subscription belongs in the worker process",
+            "message": "Dhan market feed is not enabled; use the shared market-data provider.",
         }

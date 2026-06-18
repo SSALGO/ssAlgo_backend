@@ -9,7 +9,7 @@ from app.domain.risk.service import RiskControlService
 
 class FastAPITradingServices:
     def __init__(self, db=None):
-        self.db = db or get_database()
+        self.db = db if db is not None else get_database()
         self.audit = AuditLogService(self.db)
         self.order_lifecycle = OrderLifecycleService(self.db, audit_service=self.audit)
         self.health = BrokerHealthService(self.db)

@@ -18,6 +18,9 @@ SECRET_FIELD_NAMES = {
     "totp_key",
     "factor2",
     "access_token",
+    "accessToken",
+    "dhanClientId",
+    "dhan_client_id",
     "accessTokenEncrypted",
     "refreshTokenEncrypted",
     "auth_code",
@@ -28,10 +31,18 @@ SECRET_FIELD_NAMES = {
     "session_id",
     "user_session",
 }
+NORMALIZED_SECRET_FIELD_NAMES = {
+    str(field_name).lower()
+    for field_name in SECRET_FIELD_NAMES
+}
+DHAN_CREDENTIAL_ALIASES = {
+    "dhanClientId": ("dhanClientId", "dhan_client_id", "client_id"),
+    "accessToken": ("accessToken", "access_token"),
+}
 
 
 def is_secret_field(field_name):
-    return str(field_name or "").lower() in SECRET_FIELD_NAMES
+    return str(field_name or "").lower() in NORMALIZED_SECRET_FIELD_NAMES
 
 
 class BrokerHealthService:
@@ -100,6 +111,12 @@ class BrokerHealthService:
         if broker == "paper":
             return []
         api = self.credential_row(username, broker)
+        if normalize_broker_id(broker) == "dhan":
+            return [
+                field
+                for field, aliases in DHAN_CREDENTIAL_ALIASES.items()
+                if not any(str(api.get(alias, "")).strip() for alias in aliases)
+            ]
         return [
             field
             for field in self.required_fields(broker)
@@ -109,6 +126,13 @@ class BrokerHealthService:
     def credential_summary(self, username, broker):
         api = self.credential_row(username, broker)
         summary = {}
+        if normalize_broker_id(broker) == "dhan":
+            for field, aliases in DHAN_CREDENTIAL_ALIASES.items():
+                summary[field] = any(
+                    bool(str(api.get(alias, "")).strip())
+                    for alias in aliases
+                )
+            return summary
         for field in self.required_fields(broker):
             value = api.get(field)
             if is_secret_field(field):
@@ -122,12 +146,17 @@ class BrokerHealthService:
             return {}
         cleaned = {}
         secret_present = {}
+        is_dhan = normalize_broker_id(
+            row.get("broker") or row.get("selected_broker") or row.get("selectedbroker")
+        ) == "dhan"
         for key, value in dict(row).items():
             if key == "_id":
                 cleaned["_id"] = str(value)
                 cleaned["id"] = cleaned.get("id") or str(value)
                 continue
-            if is_secret_field(key):
+            if is_secret_field(key) or (
+                is_dhan and key in {"client_id", "dhan_client_id", "dhanClientId"}
+            ):
                 cleaned[key] = ""
                 secret_present[key] = bool(str(value or "").strip())
                 continue

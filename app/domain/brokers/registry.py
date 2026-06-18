@@ -17,8 +17,8 @@ BROKER_REQUIREMENTS = {
         {'id': 'totp_key', 'label': 'TOTP Key', 'type': 'text'},
     ],
     'dhan': [
-        {'id': 'client_id', 'label': 'Client ID', 'type': 'text'},
-        {'id': 'access_token', 'label': 'Access Token', 'type': 'text'},
+        {'id': 'dhanClientId', 'label': 'Dhan Client ID', 'type': 'password'},
+        {'id': 'accessToken', 'label': 'Access Token', 'type': 'password'},
     ],
     'mofs': [
         {'id': 'client_id', 'label': 'Client ID', 'type': 'text'},
@@ -79,7 +79,7 @@ BROKER_STATUS = {
     'paper': {'enabled': True, 'status': 'paper_only', 'notes': 'Safe simulated broker with fills, slippage, brokerage, positions, and lifecycle tracking.'},
     'aliceblue': {'enabled': True, 'status': 'redirect_auth', 'notes': 'Connect through AliceBlue redirect login. Password and TOTP storage are disabled.'},
     'angelone': {'enabled': True, 'status': 'wired', 'notes': 'Login and order placement branches exist; needs broker smoke testing.'},
-    'dhan': {'enabled': True, 'status': 'wired', 'notes': 'Access-token login and order placement branches exist; needs response handling hardening.'},
+    'dhan': {'enabled': True, 'status': 'wired', 'notes': 'DhanHQ v2 profile verification and backend order execution use encrypted per-user credentials. Order APIs require the server static IP to be allowed by Dhan.'},
     'fyers': {'enabled': True, 'status': 'wired', 'notes': 'Login, token refresh, and order placement branches exist.'},
     'mofs': {'enabled': True, 'status': 'wired', 'notes': 'Login and order placement branches exist; dependency availability must be verified.'},
     'mstock': {'enabled': True, 'status': 'wired', 'notes': 'Login and order placement branches exist; email OTP flow needs production hardening.'},

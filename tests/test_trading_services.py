@@ -1249,7 +1249,8 @@ def test_broker_status_reports_missing_credentials(fake_db):
     status = health.get_health("alice", "dhan")
     assert status["broker"] == "dhan"
     assert status["login_status"] == "missing_credentials"
-    assert "client_id" in status["missing_credentials"]
+    assert "dhanClientId" in status["missing_credentials"]
+    assert "accessToken" in status["missing_credentials"]
 
 
 def test_broker_health_uses_legacy_selected_broker_from_apis(fake_db):
@@ -1602,20 +1603,31 @@ def test_secret_encryption_round_trips_without_plaintext():
 
 def test_dhan_adapter_normalizes_order_response(monkeypatch):
     from conftest import FakeDatabase
+    from app.domain.brokers.adapters import dhan as dhan_module
 
-    class FakeDhanClient:
+    class FakeDhanService:
         def __init__(self, client_id, access_token):
             self.client_id = client_id
             self.access_token = access_token
 
-        def get_fund_limits(self):
-            return {"status": "success", "message": "ok"}
+        def verify_connection(self):
+            return {
+                "success": True,
+                "message": "ok",
+                "data": {"dhanClientId": self.client_id},
+                "token_expires_at": None,
+            }
 
-        def place_order(self, **kwargs):
-            return {"status": "success", "orderId": "D123", "kwargs": kwargs}
+        def place_order(self, payload):
+            return {
+                "success": True,
+                "status": "TRANSIT",
+                "message": "ok",
+                "broker_order_id": "D123",
+                "data": payload,
+            }
 
-    module = types.SimpleNamespace(dhanhq=FakeDhanClient)
-    monkeypatch.setitem(sys.modules, "dhanhq", module)
+    monkeypatch.setattr(dhan_module, "DhanService", FakeDhanService)
 
     db = FakeDatabase()
     db["apis"].insert_one({

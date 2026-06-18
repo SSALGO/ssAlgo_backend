@@ -139,3 +139,19 @@ Daily instrument sync:
 
 Run this before market open from your scheduler/cron so strategies can resolve
 `exchange + tradingsymbol` to Kite `instrument_token`.
+
+## Dhan Setup
+
+Dhan uses per-user credentials entered from Broker Setup:
+
+- Dhan Client ID
+- DhanHQ access token
+
+The backend verifies the token through DhanHQ API v2 before saving it. Both
+values are encrypted at rest, and invalid credentials do not replace an
+existing working connection. Dhan order placement, modification, and
+cancellation are performed only by the backend trading runtime.
+
+Configure the backend server's static public IP in Dhan before enabling live
+orders. The shared market-data provider remains separate from the selected
+execution broker.

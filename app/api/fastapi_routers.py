@@ -20,6 +20,7 @@ from app.api.fastapi_schemas import (
     BacktestRequest,
     BrokerCredentialRevealRequest,
     BrokerCredentialsRequest,
+    DhanModifyOrderRequest,
     KiteOrderRequest,
     LoginRequest,
     OrderTransitionRequest,
@@ -29,7 +30,12 @@ from app.api.fastapi_schemas import (
 from app.api.fastapi_services import FastAPITradingServices, get_trading_services
 from app.core.config import AppConfig
 from app.core.database import get_database
-from app.core.secrets import decrypt_secret, encrypt_secret, encrypt_secret_fields
+from app.core.secrets import (
+    decrypt_secret,
+    decrypt_secret_fields,
+    encrypt_secret,
+    encrypt_secret_fields,
+)
 from app.core.trading_debug import trading_event
 from app.domain.audit.service import AuditLogService
 from app.domain.brokers.adapters import BrokerCredentials, BrokerOrder
@@ -41,6 +47,11 @@ from app.domain.brokers.aliceblue_auth import (
     parse_aliceblue_callback,
 )
 from app.domain.brokers.health import SECRET_FIELD_NAMES
+from app.domain.brokers.dhan import (
+    DhanError,
+    DhanService,
+    canonicalize_dhan_credentials,
+)
 from app.domain.brokers.kite import KiteError, KiteService, KiteTokenExpired
 from app.domain.brokers.registry import broker_lookup_ids, broker_payload, normalize_broker_id
 from app.domain.risk.service import RiskControlService
@@ -834,6 +845,136 @@ async def aliceblue_callback(request: Request):
     return _broker_frontend_redirect("connected", "AliceBlue connected")
 
 
+def _dhan_api_result(action, user_name, services, callback):
+    try:
+        adapter = services.adapter_factory.create("dhan")
+        adapter.login(BrokerCredentials(user=user_name, broker="dhan"))
+        result = callback(adapter)
+        return ApiResponse(
+            success=bool(result.get("success")),
+            message=result.get("message") or f"Dhan {action} completed",
+            data=result,
+        )
+    except DhanError as exc:
+        return ApiResponse(
+            success=False,
+            message=str(exc),
+            data={"broker": "dhan", "action": action, "error": exc.to_dict()},
+        )
+
+
+@broker_router.get("/dhan/profile", response_model=ApiResponse)
+def dhan_profile(
+    response: Response,
+    user=Depends(get_current_user),
+    services: FastAPITradingServices = Depends(get_trading_services),
+):
+    response.headers["Cache-Control"] = "no-store"
+    return _dhan_api_result(
+        "profile",
+        username(user),
+        services,
+        lambda adapter: adapter.get_profile(username(user)),
+    )
+
+
+@broker_router.get("/dhan/funds", response_model=ApiResponse)
+def dhan_funds(
+    response: Response,
+    user=Depends(get_current_user),
+    services: FastAPITradingServices = Depends(get_trading_services),
+):
+    response.headers["Cache-Control"] = "no-store"
+    return _dhan_api_result(
+        "funds",
+        username(user),
+        services,
+        lambda adapter: adapter.get_funds(username(user)),
+    )
+
+
+@broker_router.get("/dhan/positions", response_model=ApiResponse)
+def dhan_positions(
+    response: Response,
+    user=Depends(get_current_user),
+    services: FastAPITradingServices = Depends(get_trading_services),
+):
+    response.headers["Cache-Control"] = "no-store"
+    return _dhan_api_result(
+        "positions",
+        username(user),
+        services,
+        lambda adapter: adapter.get_positions(username(user)),
+    )
+
+
+@broker_router.get("/dhan/holdings", response_model=ApiResponse)
+def dhan_holdings(
+    response: Response,
+    user=Depends(get_current_user),
+    services: FastAPITradingServices = Depends(get_trading_services),
+):
+    response.headers["Cache-Control"] = "no-store"
+    return _dhan_api_result(
+        "holdings",
+        username(user),
+        services,
+        lambda adapter: adapter.get_holdings(username(user)),
+    )
+
+
+@broker_router.get("/dhan/orders", response_model=ApiResponse)
+def dhan_orderbook(
+    response: Response,
+    user=Depends(get_current_user),
+    services: FastAPITradingServices = Depends(get_trading_services),
+):
+    response.headers["Cache-Control"] = "no-store"
+    return _dhan_api_result(
+        "orderbook",
+        username(user),
+        services,
+        lambda adapter: adapter.get_orderbook(username(user)),
+    )
+
+
+@broker_router.put("/dhan/orders/{order_id}", response_model=ApiResponse)
+def dhan_modify_order(
+    order_id: str,
+    payload: DhanModifyOrderRequest,
+    response: Response,
+    user=Depends(get_current_user),
+    services: FastAPITradingServices = Depends(get_trading_services),
+):
+    response.headers["Cache-Control"] = "no-store"
+    return _dhan_api_result(
+        "modify_order",
+        username(user),
+        services,
+        lambda adapter: adapter.modify_order(
+            username(user),
+            order_id,
+            payload.model_dump(exclude_none=True),
+        ),
+    )
+
+
+@broker_router.delete("/dhan/orders/{order_id}", response_model=ApiResponse)
+def dhan_cancel_order(
+    order_id: str,
+    response: Response,
+    user=Depends(get_current_user),
+    services: FastAPITradingServices = Depends(get_trading_services),
+):
+    response.headers["Cache-Control"] = "no-store"
+    return _dhan_api_result(
+        "cancel_order",
+        username(user),
+        services,
+        lambda adapter: adapter.cancel_order(username(user), order_id),
+    )
+
+
 @broker_router.post("/{broker}/test", response_model=ApiResponse)
 def test_broker_connection(
     broker: str,
@@ -869,13 +1010,150 @@ def save_broker_credentials(
     broker: str,
     payload: BrokerCredentialsRequest,
     user=Depends(get_current_user),
+    services: FastAPITradingServices = Depends(get_trading_services),
 ):
     broker = normalize_broker_id(broker)
     registry = broker_payload().get("broker_status", {}).get(broker, {})
     if registry.get("enabled") is False:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{broker} is not enabled for trading yet")
-    db = get_database()
+    db = services.db
     values = dict(payload.values)
+    if broker == "dhan":
+        user_name = username(user)
+        existing = db["apis"].find_one({"user": user_name, "broker": broker}) or {}
+        existing_values = canonicalize_dhan_credentials(
+            decrypt_secret_fields(existing, SECRET_FIELD_NAMES)
+        )
+        submitted = canonicalize_dhan_credentials(values)
+        candidate = {
+            "dhanClientId": submitted["dhanClientId"] or existing_values["dhanClientId"],
+            "accessToken": submitted["accessToken"] or existing_values["accessToken"],
+        }
+        if not candidate["dhanClientId"] or not candidate["accessToken"]:
+            return ApiResponse(
+                success=False,
+                message="Dhan Client ID and access token are required.",
+                data={
+                    "broker": broker,
+                    "error": {"category": "missing_credentials"},
+                },
+            )
+
+        try:
+            verification = DhanService(
+                candidate["dhanClientId"],
+                candidate["accessToken"],
+            ).verify_connection()
+        except DhanError as exc:
+            now = datetime.datetime.now(datetime.UTC)
+            services.health.update_health(
+                user_name,
+                broker,
+                login_status="rejected",
+                token_status=(
+                    "expired"
+                    if exc.token_invalid and "expired" in str(exc).lower()
+                    else "invalid"
+                    if exc.token_invalid
+                    else "unknown"
+                ),
+                last_test_at=now,
+                last_verified_at=now,
+                last_error=str(exc),
+            )
+            AuditLogService(db).record(
+                "broker_credentials_rejected",
+                user=user_name,
+                resource_type="broker_api",
+                resource_id=broker,
+                status="failed",
+                details={
+                    "broker": broker,
+                    "category": exc.category,
+                    "code": exc.code,
+                },
+            )
+            return ApiResponse(
+                success=False,
+                message=str(exc),
+                data={
+                    "broker": broker,
+                    "error": exc.to_dict(),
+                },
+            )
+
+        now = datetime.datetime.now(datetime.UTC)
+        token_expires_at = verification.get("token_expires_at")
+        encrypted_values = encrypt_secret_fields(
+            {
+                "user": user_name,
+                "broker": broker,
+                **candidate,
+                "token_expires_at": token_expires_at,
+                "token_status": "valid",
+                "last_verified_at": now,
+                "updated_at": now,
+            },
+            SECRET_FIELD_NAMES,
+        )
+        result = db["apis"].update_one(
+            {"user": user_name, "broker": broker},
+            {
+                "$set": encrypted_values,
+                "$unset": {
+                    "client_id": "",
+                    "dhan_client_id": "",
+                    "access_token": "",
+                },
+            },
+            upsert=True,
+        )
+        if payload.activate:
+            db["broker"].update_one(
+                {"user": user_name},
+                {"$set": {"user": user_name, "selectedbroker": broker}},
+                upsert=True,
+            )
+        services.health.update_health(
+            user_name,
+            broker,
+            login_status="connected",
+            token_status="valid",
+            token_expires_at=token_expires_at,
+            connected_at=now,
+            last_verified_at=now,
+            last_test_at=now,
+            last_error="",
+        )
+        AuditLogService(db).record(
+            "broker_credentials_saved",
+            user=user_name,
+            resource_type="broker_api",
+            resource_id=broker,
+            details={
+                "broker": broker,
+                "activated": payload.activate,
+                "verified": True,
+            },
+        )
+        return ApiResponse(
+            success=True,
+            message="Dhan credentials verified and saved",
+            data={
+                "broker": broker,
+                "activated": payload.activate,
+                "verified": True,
+                "token_expires_at": (
+                    token_expires_at.isoformat()
+                    if hasattr(token_expires_at, "isoformat")
+                    else token_expires_at
+                ),
+                "matched": result.matched_count,
+                "modified": result.modified_count,
+                "upserted_id": str(result.upserted_id) if result.upserted_id else None,
+            },
+        )
+
     if broker == "aliceblue":
         forbidden = sorted(
             field for field in values.keys() if field in ALICEBLUE_FORBIDDEN_SECRET_FIELDS
@@ -951,6 +1229,11 @@ def reveal_broker_credential(
 ):
     broker = normalize_broker_id(broker)
     field_name = payload.field
+    if broker == "dhan":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dhan credential reveal is disabled",
+        )
     if broker == "aliceblue" and field_name in ALICEBLUE_FORBIDDEN_SECRET_FIELDS:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

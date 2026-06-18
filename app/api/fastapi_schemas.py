@@ -120,6 +120,36 @@ class KiteOrderRequest(BaseModel):
         return value
 
 
+class DhanModifyOrderRequest(BaseModel):
+    orderType: str
+    legName: Optional[str] = None
+    quantity: int = Field(ge=1)
+    price: float = Field(default=0, ge=0)
+    disclosedQuantity: int = Field(default=0, ge=0)
+    triggerPrice: float = Field(default=0, ge=0)
+    validity: str = "DAY"
+
+    @field_validator("orderType", "legName", "validity", mode="before")
+    @classmethod
+    def normalize_dhan_text(cls, value):
+        if value is None:
+            return value
+        return str(value).strip().upper()
+
+    @field_validator("orderType")
+    @classmethod
+    def validate_dhan_order_type(cls, value):
+        mapping = {
+            "SL": "STOP_LOSS",
+            "SL-M": "STOP_LOSS_MARKET",
+            "SLM": "STOP_LOSS_MARKET",
+        }
+        value = mapping.get(value, value)
+        if value not in {"MARKET", "LIMIT", "STOP_LOSS", "STOP_LOSS_MARKET"}:
+            raise ValueError("unsupported Dhan order type")
+        return value
+
+
 class WorkerOrderRequest(PaperOrderRequest):
     user: str = Field(min_length=1)
     broker: str = ""

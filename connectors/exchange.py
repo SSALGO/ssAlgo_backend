@@ -2397,7 +2397,13 @@ class Exchange:
                         for st in stopuser:
                             sst=self.strategy_collection.find({'user':st,'status':'opened'})
                             for ss in sst:
-                                self.strategy_collection.update_one({'botcode':ss['botcode'],'user':st}, {'$set': {'status':'paused'} })
+                                self.strategy_collection.update_one(
+                                    {'botcode':ss['botcode'],'user':st},
+                                    {
+                                        '$set': {'status':'paused'},
+                                        '$inc': {'lifecycle_revision': 1},
+                                    },
+                                )
 
                 time.sleep(60*60)
             except:
@@ -2913,6 +2919,9 @@ class Exchange:
             #print('hello')
         #print(trade['strategy'])
         try:
+            trade = self._current_strategy_snapshot(trade)
+            if not trade:
+                return
             self._log_strategy_evaluation(trade)
             if trade['strategy']=='FRACTALNUBIATIMEHEDGEORDER':
                 self.FRACTALNUBIATIMEHEDGEORDER(trade)
@@ -2925,6 +2934,9 @@ class Exchange:
         #if (trade['status'] != 'closed' ):
             #print('hello')
         try:
+            trade = self._current_strategy_snapshot(trade)
+            if not trade:
+                return
             self._log_strategy_evaluation(trade)
             if trade['strategy'] == 'SSEQUITY':
                 self.CHARTINK(trade)
@@ -2939,6 +2951,9 @@ class Exchange:
         #if (trade['status'] != 'closed' ):
             #print('hello')
         try:
+            trade = self._current_strategy_snapshot(trade)
+            if not trade:
+                return
             self._log_strategy_evaluation(trade)
             if trade['strategy'] == 'SSALGO':
                 self.SSALGO(trade)
@@ -3003,6 +3018,63 @@ class Exchange:
             **symbol_details,
         )
 
+    def _strategy_identity_query(self, trade):
+        if trade.get('_id') is not None:
+            return {'_id': trade.get('_id')}
+        return {
+            'botcode': trade.get('botcode'),
+            'user': trade.get('user'),
+        }
+
+    def _current_strategy_snapshot(self, trade):
+        current = self.strategy_collection.find_one(
+            self._strategy_identity_query(trade)
+        )
+        if not current:
+            trading_event(
+                "strategy_snapshot_discarded",
+                force=True,
+                user=trade.get("user"),
+                strategy_id=trade.get("botcode"),
+                reason="strategy_missing",
+            )
+            return None
+
+        snapshot_revision = int(trade.get('lifecycle_revision') or 0)
+        current_revision = int(current.get('lifecycle_revision') or 0)
+        if snapshot_revision != current_revision:
+            trading_event(
+                "strategy_snapshot_reloaded",
+                force=True,
+                user=current.get("user"),
+                strategy_id=current.get("botcode"),
+                snapshot_revision=snapshot_revision,
+                current_revision=current_revision,
+                snapshot_status=trade.get("status"),
+                current_status=current.get("status"),
+            )
+        if (
+            current.get('status') != 'opened'
+            and current.get('position') != 'in'
+        ):
+            return None
+        return current
+
+    @staticmethod
+    def _unique_strategy_snapshots(strategies):
+        unique = []
+        seen = set()
+        for strategy in strategies:
+            key = (
+                str(strategy.get('user') or ''),
+                str(strategy.get('botcode') or strategy.get('_id') or ''),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(strategy)
+        return unique
+
     def _log_strategy_exception(self, trade, exc):
         trading_exception(
             "strategy_evaluation_error",
@@ -3028,6 +3100,149 @@ class Exchange:
 
     def _next_entry_id(self):
         return time.time_ns()
+
+    def _entry_signal_id(self, trade, signal, option):
+        frame = self.dataframes.get(trade.get('symbol'))
+        candle_time = None
+        if isinstance(frame, pd.DataFrame) and not frame.empty:
+            for column in ('time', 'date', 'timestamp'):
+                if column in frame.columns:
+                    candle_time = frame.iloc[-1].get(column)
+                    break
+        return (
+            f"{trade.get('user')}:{trade.get('botcode')}:"
+            f"{option}:{signal}:{candle_time or 'current'}"
+        )
+
+    def _claim_entry_submission(self, trade, signal, option):
+        now = int(datetime.datetime.now().timestamp())
+        current = self.strategy_collection.find_one({
+            'botcode': trade.get('botcode'),
+            'user': trade.get('user'),
+        })
+        if not current:
+            return False
+
+        current_state = str(current.get('entry_order_state') or '').lower()
+        snapshot_revision = int(trade.get('lifecycle_revision') or 0)
+        current_revision = int(current.get('lifecycle_revision') or 0)
+        if (
+            current.get('status') != 'opened'
+            or snapshot_revision != current_revision
+        ):
+            trading_event(
+                "strategy_entry_stale_snapshot_suppressed",
+                force=True,
+                user=trade.get("user"),
+                strategy_id=trade.get("botcode"),
+                symbol=option,
+                signal=signal,
+                snapshot_revision=snapshot_revision,
+                current_revision=current_revision,
+                current_status=current.get("status"),
+            )
+            return False
+        if current.get('position') == 'in' or current_state in {
+            'submitting', 'attempted'
+        }:
+            return False
+        if trade.get('live') and current_state == 'broker_failed':
+            return False
+        if current_state == 'preflight_failed':
+            retry_after = int(
+                os.getenv("SSLAGO_ORDER_PREFLIGHT_RETRY_SECONDS", "30")
+            )
+            last_failure = int(current.get('last_broker_order_error_time') or 0)
+            if now - last_failure < retry_after:
+                return False
+
+        signal_id = self._entry_signal_id(trade, signal, option)
+        claim_query = {
+            'botcode': trade.get('botcode'),
+            'user': trade.get('user'),
+            'status': 'opened',
+            'position': {'$ne': 'in'},
+            'entry_order_state': {
+                '$nin': ['submitting', 'attempted']
+            },
+        }
+        if current_revision:
+            claim_query['lifecycle_revision'] = current_revision
+        else:
+            claim_query['$or'] = [
+                {'lifecycle_revision': {'$exists': False}},
+                {'lifecycle_revision': 0},
+            ]
+        result = self.strategy_collection.update_one(
+            claim_query,
+            {
+                '$set': {
+                    'entry_order_state': 'submitting',
+                    'entry_order_time': now,
+                    'entry_signal_id': signal_id,
+                }
+            },
+        )
+        if not result.matched_count:
+            trading_event(
+                "strategy_entry_duplicate_suppressed",
+                force=True,
+                user=trade.get("user"),
+                strategy_id=trade.get("botcode"),
+                signal_id=signal_id,
+                symbol=option,
+                signal=signal,
+                position_before=current.get("position"),
+                entry_order_state_before=current_state,
+            )
+            return False
+
+        trade['entry_order_state'] = 'submitting'
+        trade['entry_signal_id'] = signal_id
+        trade['lifecycle_revision'] = current_revision
+        trading_event(
+            "strategy_signal_generated",
+            force=True,
+            user=trade.get("user"),
+            strategy_id=trade.get("botcode"),
+            signal_id=signal_id,
+            symbol=option,
+            signal=signal,
+            position_before=current.get("position"),
+            entry_order_state_before=current_state,
+            position_after=current.get("position"),
+            entry_order_state_after="submitting",
+        )
+        return True
+
+    def _entry_submission_still_current(self, trade):
+        current = self.strategy_collection.find_one(
+            self._strategy_identity_query(trade)
+        )
+        return bool(
+            current
+            and current.get('status') == 'opened'
+            and int(current.get('lifecycle_revision') or 0)
+            == int(trade.get('lifecycle_revision') or 0)
+            and str(current.get('entry_order_state') or '').lower()
+            in {'submitting', 'attempted'}
+        )
+
+    def _release_stale_entry_submission(self, trade):
+        self.strategy_collection.update_one(
+            {
+                **self._strategy_identity_query(trade),
+                'entry_signal_id': trade.get('entry_signal_id'),
+                'position': {'$ne': 'in'},
+            },
+            {
+                '$unset': {
+                    'entry_order_state': '',
+                    'entry_order_time': '',
+                    'entry_signal_id': '',
+                }
+            },
+        )
 
     def _admin_control_for_symbol(self, symbol):
         control = self.controls.get(symbol)
@@ -3066,7 +3281,10 @@ class Exchange:
                 seen_botcodes = set()
                 for config in mains:
                     botcode = config.get('botcode')
-                    dedupe_key = botcode or str(config.get('_id'))
+                    dedupe_key = (
+                        str(config.get('user') or ''),
+                        str(botcode or config.get('_id') or ''),
+                    )
                     if dedupe_key in seen_botcodes:
                         continue
                     seen_botcodes.add(dedupe_key)
@@ -3110,7 +3328,10 @@ class Exchange:
                 }))
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    executor.map(self.process_equity_strategy, mains)
+                    executor.map(
+                        self.process_equity_strategy,
+                        self._unique_strategy_snapshots(mains),
+                    )
                 #time.sleep(1)
                 if self.testmode:
                     #print(self.prices)
@@ -3134,7 +3355,11 @@ class Exchange:
         while not self._shutdown_event.is_set():
             try:
                 
-                mains = list(self.strategy_collection.find({'$or': [{'status': 'opened'}, {'position': 'in'}]}))
+                mains = self._unique_strategy_snapshots(
+                    list(self.strategy_collection.find({
+                        '$or': [{'status': 'opened'}, {'position': 'in'}]
+                    }))
+                )
                 now = time.monotonic()
                 if now - self._debug_last_feed_log >= 30:
                     active_symbols = sorted({
@@ -4670,6 +4895,11 @@ class Exchange:
     def _broker_order_response_ok(self, broker, response):
         if response is True:
             return True
+        if isinstance(response, list):
+            return bool(response) and any(
+                self._broker_order_response_ok(broker, item)
+                for item in response
+            )
         if not isinstance(response, dict):
             return response not in (None, False)
         status = str(response.get('status') or response.get('stat') or response.get('s') or '').lower()
@@ -4817,6 +5047,8 @@ class Exchange:
             {
                 'botcode': trade['botcode'],
                 'user': trade['user'],
+                'status': 'opened',
+                'position': {'$ne': 'in'},
                 '$or': [
                     {'entry_order_state': {'$exists': False}},
                     {'entry_order_state': {'$nin': ['submitting', 'submitted']}},
@@ -5132,7 +5364,7 @@ class Exchange:
         else:
             itrade['status'] = 'exit_pending'
 
-        trade['position'] = 'out' if all_submitted else trade.get('position', 'in')
+        trade['position'] = 'out' if all_confirmed else 'in'
         if 'usetype' in list(trade.keys()) and trade['usetype'] == True and trade['status'] != 'paused':
             trade['status'] = 'opened'
         else:
@@ -5519,6 +5751,7 @@ class Exchange:
                                     for i in range(0,len(itrade['pos'])):
 
                                         de=(itrade['pos'][i])
+                                        futureprices = None
                                         if de['type']!='FUT':
                                             try:
                                                 option_price = self._get_market_price(
@@ -5560,38 +5793,42 @@ class Exchange:
                                         )
                                         
                                         #print(itrade['pos'][i])
-                                        if trade['tptrigger_type'] == 'On Spot':
-                                            if trade['direction_type'] == 'Up Side':
-                                                tp1=itrade['pos'][i]['current_price']>=(itrade['pos'][i]['entry_price']+trade['tp1'])
-                                                tp2=itrade['pos'][i]['current_price']>=(itrade['pos'][i]['entry_price']+trade['tp2'])
-                                                sl=itrade['pos'][i]['current_price']<=(itrade['pos'][i]['entry_price']-trade['sl'])
-                                            elif trade['direction_type'] == 'Dn Side':
-                                                tp1=itrade['pos'][i]['current_price']<=(itrade['pos'][i]['entry_price']-trade['tp1'])
-                                                tp2=itrade['pos'][i]['current_price']<=(itrade['pos'][i]['entry_price']-trade['tp2'])
-                                                sl=itrade['pos'][i]['current_price']>=(itrade['pos'][i]['entry_price']+trade['sl'])
-                                        elif trade['tptrigger_type'] == 'On Future':
-                                            if 'futureprice' in itrade['pos'][i]:
-                                                if trade['direction_type'] == 'Up Side':
-                                                    tp1=itrade['pos'][i][itrade['pos'][i]['symbol']+'-I']>=(itrade['pos'][i]['entry_price']+trade['tp1'])
-                                                    tp2=itrade['pos'][i][itrade['pos'][i]['symbol']+'-I']>=(itrade['pos'][i]['entry_price']+trade['tp2'])
-                                                    sl=itrade['pos'][i][itrade['pos'][i]['symbol']+'-I']<=(itrade['pos'][i]['entry_price']-trade['sl'])
-                                                elif trade['direction_type'] == 'Dn Side':
-                                                    tp1=itrade['pos'][i][itrade['pos'][i]['symbol']+'-I']<=(itrade['pos'][i]['entry_price']-trade['tp1'])
-                                                    tp2=itrade['pos'][i][itrade['pos'][i]['symbol']+'-I']<=(itrade['pos'][i]['entry_price']-trade['tp2'])
-                                                    sl=itrade['pos'][i][itrade['pos'][i]['symbol']+'-I']>=(itrade['pos'][i]['entry_price']+trade['sl'])
+                                        spot_price = itrade['pos'][i]['current_price']
+                                        future_trigger_price = (
+                                            futureprices
+                                            if futureprices is not None
+                                            else spot_price
+                                        )
+                                        tp_trigger_price = (
+                                            future_trigger_price
+                                            if trade['tptrigger_type'] == 'On Future'
+                                            else spot_price
+                                        )
+                                        tp_flags = self._directional_target_stop_flags(
+                                            itrade['pos'][i]['entry_price'],
+                                            tp_trigger_price,
+                                            trade['tp1'],
+                                            trade['tp2'],
+                                            trade['sl'],
+                                            direction=trade['direction_type'],
+                                        )
+                                        tp1 = tp1 or tp_flags['tp1']
+                                        tp2 = tp2 or tp_flags['tp2']
 
-
-                                        if trade['sltrigger_type'] == 'On Spot':
-                                            if trade['direction_type'] == 'Up Side':
-                                                sl=itrade['pos'][i]['current_price']<=(itrade['pos'][i]['entry_price']-trade['sl'])
-                                            elif trade['direction_type'] == 'Dn Side':
-                                                sl=itrade['pos'][i]['current_price']>=(itrade['pos'][i]['entry_price']+trade['sl'])
-                                        elif trade['sltrigger_type'] == 'On Future':
-                                            if 'futureprice' in itrade['pos'][i]:
-                                                if trade['direction_type'] == 'Up Side':
-                                                    sl=itrade['pos'][i][itrade['pos'][i]['symbol']+'-I']<=(itrade['pos'][i]['entry_price']-trade['sl'])
-                                                elif trade['direction_type'] == 'Dn Side':
-                                                    sl=itrade['pos'][i][itrade['pos'][i]['symbol']+'-I']>=(itrade['pos'][i]['entry_price']+trade['sl'])
+                                        sl_trigger_price = (
+                                            future_trigger_price
+                                            if trade['sltrigger_type'] == 'On Future'
+                                            else spot_price
+                                        )
+                                        sl_flags = self._directional_target_stop_flags(
+                                            itrade['pos'][i]['entry_price'],
+                                            sl_trigger_price,
+                                            trade['tp1'],
+                                            trade['tp2'],
+                                            trade['sl'],
+                                            direction=trade['direction_type'],
+                                        )
+                                        sl = sl or sl_flags['sl']
                                         #print('113')
                                     rollover=datetime.datetime.strptime(itrade['pos'][i]['optionexpiry'], "%Y-%m-%d")-datetime.timedelta(days=int(trade['DaysHead']))
                                     #pnl=900
@@ -5663,12 +5900,16 @@ class Exchange:
                                             self._handle_aliceblue_fractal_hedge_exit(trade, itrade, reason)
                                             break
                                         
-                                        itrade['status']='close'
-                                        trade['position']='out'
+                                        itrade['status']='exit_pending'
+                                        trade['position']='in'
+                                        live_exit_count = 0
+                                        accepted_exit_count = 0
+                                        failed_exit_count = 0
 
                                         for trad in itrade['pos'][::-1]:
 
                                             if trad['live']:
+                                                live_exit_count += 1
                                                 lot=trad['lot']
                                                 #place_trade('NFO',trade['EntryOption'], trade['Lot'], 'sell')
                                                 z=self.broker_collection.find_one({'user':trade['user']})
@@ -5758,7 +5999,7 @@ class Exchange:
                                                             exch=self.dhan[trade['user']].MCX
                                                         
                                                         ret=self.dhan[trade['user']].place_order(security_id=str(trad['optiontoken']),            # HDFC Bank
-                                                            exchange_segment=trad['exch'],
+                                                            exchange_segment=exch,
                                                             transaction_type=  "SELL" if trad['side'] == 'BUY' else 'BUY' , 
                                                             quantity=int(trad['optionlot']) * int(trad['lot']),
                                                             order_type="MARKET",
@@ -5767,9 +6008,10 @@ class Exchange:
                                                             after_market_order=False, validity='DAY', amo_time='OPEN',
                                                             bo_profit_value=None, bo_stop_loss_Value=None, tag=None )
                                                     except Exception as e:
-                                                        print(f"[ERROR] Order failed but returning True anyway: {e}")
-
-                                                    ret = True
+                                                        ret = {
+                                                            'status': 'error',
+                                                            'message': str(e),
+                                                        }
                                                     print(ret)
                                                 elif z['selectedbroker']=='zerodha':
                                                     exch=trad['exch']
@@ -5852,6 +6094,46 @@ class Exchange:
                                                     response = requests.post('https://api.mstock.trade/openapi/typea/orders/regular', headers=headers, data=data)
                                                     ret=(response.json())
                                                 print(ret)
+                                                exit_side = "SELL" if trad['side'] == 'BUY' else 'BUY'
+                                                exit_order_id = self._extract_broker_order_id(ret)
+                                                exit_ok = self._broker_order_response_ok(
+                                                    z['selectedbroker'],
+                                                    ret,
+                                                )
+                                                trad['exit_side'] = exit_side
+                                                trad['exit_qty'] = int(trad['optionlot']) * int(trad['lot'])
+                                                trad['exit_order_id'] = exit_order_id
+                                                trad['exit_order_status'] = (
+                                                    'submitted' if exit_ok else 'failed'
+                                                )
+                                                trad['exit_order_response'] = self._json_safe(ret)
+                                                if exit_ok:
+                                                    accepted_exit_count += 1
+                                                else:
+                                                    failed_exit_count += 1
+                                                    trading_event(
+                                                        'exit_order_failed',
+                                                        force=True,
+                                                        user=trade.get('user'),
+                                                        strategy_id=trade.get('botcode'),
+                                                        symbol=trad.get('optionname'),
+                                                        broker=z.get('selectedbroker'),
+                                                        exit_side=exit_side,
+                                                        exit_qty=trad['exit_qty'],
+                                                        response=self._json_safe(ret),
+                                                    )
+                                            else:
+                                                trad['decision'] = 'exit'
+
+                                        if live_exit_count == 0:
+                                            itrade['status'] = 'close'
+                                            trade['position'] = 'out'
+                                        elif failed_exit_count:
+                                            itrade['status'] = 'exit_failed'
+                                            trade['position'] = 'in'
+                                        elif accepted_exit_count == live_exit_count:
+                                            itrade['status'] = 'exit_pending'
+                                            trade['position'] = 'in'
                                         trade['timetowait']=int(datetime.datetime.now().timestamp())+int((int(self.timeswitch[trade['timeframe']])*60))
                                         print('13')
 
@@ -6190,9 +6472,10 @@ class Exchange:
                                                             bo_profit_value=None, bo_stop_loss_Value=None, tag=None )
                                                         print(ret)
                                                     except Exception as e:
-                                                        print(f"[ERROR] Order failed but returning True anyway: {e}")
-
-                                                    ret = True
+                                                        ret = {
+                                                            'status': 'error',
+                                                            'message': str(e),
+                                                        }
                                                     print(ret)
                                                 elif z['selectedbroker']=='zerodha':
                                                     #exch=trad['exch']
@@ -6370,10 +6653,41 @@ class Exchange:
                                             print(pos)
 
                                         if failed_entry_orders:
+                                            if poss:
+                                                existing_partial = self.opositions_collection.find_one({
+                                                    'botcode': trade['botcode'],
+                                                    'user': trade['user'],
+                                                    'status': {
+                                                        '$in': [
+                                                            'open',
+                                                            'exit_pending',
+                                                            'exit_failed',
+                                                        ]
+                                                    },
+                                                })
+                                                if not existing_partial:
+                                                    self.opositions_collection.insert_one({
+                                                        'user': str(trade['user']),
+                                                        'botname': trade['botname'],
+                                                        'time': int(datetime.datetime.now().timestamp()),
+                                                        'symbol': trade['symbol'],
+                                                        'status': 'open',
+                                                        'live': trade['live'],
+                                                        'pnl': int(hedge_total_pnl),
+                                                        'exch': exch,
+                                                        'botcode': trade['botcode'],
+                                                        'pos': poss,
+                                                        'decision': 'exitit',
+                                                        'reason': 'partial multi-leg entry; automatic square-off required',
+                                                    })
                                             self.strategy_collection.update_one(
                                                 {'botcode': trade['botcode'], 'user': trade['user']},
                                                 {'$set': {
-                                                    'entry_order_state': 'broker_failed',
+                                                    'status': 'paused',
+                                                    'position': 'in' if poss else 'out',
+                                                    'entry_order_state': (
+                                                        'partial_failed' if poss else 'broker_failed'
+                                                    ),
                                                     'last_broker_order_error': 'one_or_more_fractal_hedge_entry_orders_failed',
                                                     'last_broker_order_error_time': int(datetime.datetime.now().timestamp()),
                                                 }}
@@ -8199,9 +8513,10 @@ class Exchange:
                         bo_profit_value=None, bo_stop_loss_Value=None, tag=None )
                         print(ret)
                     except Exception as e:
-                        print(f"[ERROR] Order failed but returning True anyway: {e}")
-
-                    ret = True
+                        ret = {
+                            'status': 'error',
+                            'message': str(e),
+                        }
                     print(ret)
                 elif z['selectedbroker']=='zerodha':
                     if trade['positiontype'] == 'Equity':
@@ -8477,9 +8792,10 @@ class Exchange:
                     bo_profit_value=None, bo_stop_loss_Value=None, tag=None )
                         print(ret)
                     except Exception as e:
-                        print(f"[ERROR] Order failed but returning True anyway: {e}")
-
-                    ret = True
+                        ret = {
+                            'status': 'error',
+                            'message': str(e),
+                        }
                     print(ret)
                 elif z['selectedbroker']=='zerodha':
                     tradingsymbol=self.kiteSymboldf[(self.kiteSymboldf['exchange']==exch)&(self.kiteSymboldf['exchange_token']==optiontoken)]['tradingsymbol'].iloc[-1]
@@ -8679,7 +8995,7 @@ class Exchange:
             print(f"Error in EFBUY: {e}")
     def OBUY(self, trade, OTYPE, Signal):
         try:
-            if trade.get('live') and trade.get('entry_order_state') in {'attempted', 'broker_failed'}:
+            if trade.get('live') and trade.get('entry_order_state') in {'submitting', 'attempted', 'broker_failed'}:
                 return
             if trade.get('live') and trade.get('entry_order_state') == 'preflight_failed':
                 retry_after = int(
@@ -8774,6 +9090,9 @@ class Exchange:
             print(f"option price: {pricesss}")
             print(instrument)
 
+            if not self._claim_entry_submission(trade, Signal, option):
+                return
+
             # ---------------- ORDER EXECUTION ---------------- #
 
             broker_order_results = []
@@ -8790,6 +9109,17 @@ class Exchange:
                     }
                 )
                 trade['entry_order_state'] = 'attempted'
+                if not self._entry_submission_still_current(trade):
+                    self._release_stale_entry_submission(trade)
+                    trading_event(
+                        "strategy_entry_cancelled_before_broker",
+                        force=True,
+                        user=trade.get("user"),
+                        strategy_id=trade.get("botcode"),
+                        signal_id=trade.get("entry_signal_id"),
+                        symbol=option,
+                    )
+                    return
 
                 print("i start firing ##################")
 
@@ -8809,6 +9139,19 @@ class Exchange:
                 )
 
                 qty = int(optionlot) * int(trade['lot'])
+                trading_event(
+                    "broker_order_request",
+                    force=True,
+                    user=trade.get("user"),
+                    strategy_id=trade.get("botcode"),
+                    signal_id=trade.get("entry_signal_id"),
+                    broker=broker,
+                    action="BUY",
+                    symbol=option,
+                    exchange=exch,
+                    quantity=qty,
+                    order_type="MARKET_OR_BROKER_CONFIGURED",
+                )
 
                 ret = None
 
@@ -8944,6 +9287,15 @@ class Exchange:
             broker_order_success = (not trade['live']) or any(
                 result['success'] for result in broker_order_results
             )
+            requested_quantity = int(optionlot) * int(trade['lot'])
+            filled_quantity = (
+                requested_quantity
+                if not trade['live']
+                else self._filled_quantity_from_broker_results(
+                    broker_order_results,
+                    requested_quantity,
+                )
+            )
             entry_option_price = self._entry_price_from_broker_results(
                 broker_order_results,
                 pricesss
@@ -8991,21 +9343,56 @@ class Exchange:
                 'botcode': trade['botcode'],
                 'optiontoken': int(optiontoken),
                 'trail_stoploss': 0,
-                'broker_order_results': broker_order_results
+                'broker_order_results': broker_order_results,
+                'signal_id': trade.get('entry_signal_id'),
+                'lifecycle_revision': int(trade.get('lifecycle_revision') or 0),
+                'entry_order_id': next(
+                    (
+                        self._extract_broker_order_id(result.get('response'))
+                        for result in broker_order_results
+                        if result.get('success')
+                        and self._extract_broker_order_id(result.get('response'))
+                    ),
+                    None,
+                ),
+                'entry_quantity': filled_quantity,
+                'buy_quantity': filled_quantity,
+                'sell_quantity': 0,
+                'net_quantity': filled_quantity,
             }
+            if broker_order_success and not self._entry_submission_still_current(trade):
+                pos['decision'] = 'exitit'
+                pos['lifecycle_exit_reason'] = 'strategy_changed_during_entry'
 
             self.opositions_collection.insert_one(pos)
 
             if broker_order_success:
                 self.strategy_collection.update_one(
-                    {'botcode': trade['botcode']},
+                    {'botcode': trade['botcode'], 'user': trade['user']},
                     {'$set': {'position': 'in', 'entry_order_state': 'success'}}
                 )
             else:
                 self.strategy_collection.update_one(
-                    {'botcode': trade['botcode']},
+                    {'botcode': trade['botcode'], 'user': trade['user']},
                     {'$set': {'position': 'out', 'entry_order_state': 'broker_failed', 'last_broker_order_error': broker_order_results}}
                 )
+            trading_event(
+                "position_state_after_entry_order",
+                force=True,
+                user=trade.get("user"),
+                strategy_id=trade.get("botcode"),
+                signal_id=trade.get("entry_signal_id"),
+                symbol=option,
+                broker_order_success=broker_order_success,
+                entry_order_id=pos.get("entry_order_id"),
+                buy_quantity=pos.get("buy_quantity"),
+                sell_quantity=pos.get("sell_quantity"),
+                net_quantity=pos.get("net_quantity"),
+                position_after="in" if broker_order_success else "out",
+                entry_order_state_after=(
+                    "success" if broker_order_success else "broker_failed"
+                ),
+            )
 
             print("i am goee")
 
@@ -9134,20 +9521,13 @@ class Exchange:
                     trade['trail_stoploss'] = 0
 
                 # ------------------ TP / SL ------------------
-                if config['pct_point']:
-                    if is_sell_position:
-                        tp_price = entry * (1 - config['tp'] / 100)
-                        sl_price = entry * (1 + config['sl'] / 100)
-                    else:
-                        tp_price = entry * (1 + config['tp'] / 100)
-                        sl_price = entry * (1 - config['sl'] / 100)
-                else:
-                    if is_sell_position:
-                        tp_price = entry - config['tp']
-                        sl_price = entry + config['sl']
-                    else:
-                        tp_price = entry + config['tp']
-                        sl_price = entry - config['sl']
+                tp_price, sl_price = self._price_exit_levels(
+                    entry,
+                    config['tp'],
+                    config['sl'],
+                    is_sell=is_sell_position,
+                    percentage=config['pct_point'],
+                )
 
                 # ------------------ SIGNAL ------------------
                 Signal = False
@@ -9194,15 +9574,18 @@ class Exchange:
                 elif config['trail'] == 1 and trade['trail_stoploss'] != 0 and pnl <= trade['trail_stoploss'] * lot:
                     exit_reason = "Trailing SL"
 
-                elif not config['pnlexit_tpslexit'] and (
-                    price <= tp_price if is_sell_position else price >= tp_price
+                elif (
+                    not config['pnlexit_tpslexit']
+                    and (
+                        price_exit_reason := self._price_exit_reason(
+                            price,
+                            tp_price,
+                            sl_price,
+                            is_sell=is_sell_position,
+                        )
+                    )
                 ):
-                    exit_reason = "TP Hit"
-
-                elif not config['pnlexit_tpslexit'] and (
-                    price >= sl_price if is_sell_position else price <= sl_price
-                ):
-                    exit_reason = "SL Hit"
+                    exit_reason = price_exit_reason
 
                 elif config['strategy'] == 'EQSSALGO' and trade['symbol'] not in config.get('symbol', []):
                     exit_reason = "Symbol Removed"
@@ -9211,13 +9594,40 @@ class Exchange:
                 if exit_reason:
                     if trade.get('live'):
                         try:
-                            self.mainebuyexit(trade, config)
+                            exit_result = self.mainebuyexit(trade, config)
                         except Exception as order_error:
                             print(
                                 f"Live EBUYEXIT order deferred for "
                                 f"{trade.get('user')}/{trade.get('optionname')}: {order_error}"
                             )
                             return False
+                    else:
+                        open_quantity = self._open_position_quantity(trade)
+                        exit_result = {
+                            'success': True,
+                            'requested_quantity': open_quantity,
+                            'filled_quantity': open_quantity,
+                            'response': {'status': 'success', 'broker': 'paper'},
+                        }
+
+                    exit_side = (
+                        'SELL'
+                        if trade.get('side') == 'BUY'
+                        else 'BUY'
+                    )
+                    fully_closed = self._apply_exit_fill(
+                        trade,
+                        exit_side,
+                        exit_result,
+                    )
+                    if not fully_closed:
+                        trade['decision'] = 'exitit'
+                        config['position'] = 'in'
+                        self.opositions_collection.update_one(
+                            {'_id': trade['_id']},
+                            {'$set': trade},
+                        )
+                        return False
 
                     print(f"{now} :: {userr} :: ### {exit_reason} ###")
 
@@ -9350,12 +9760,13 @@ class Exchange:
                     trade['trail_stoploss'] = 0
 
                 # ------------------ TP/SL ------------------
-                if config['pct_point']:
-                    ex = trade['optionentry'] * (1 + config['tp'] / 100)
-                    sl = trade['optionentry'] * (1 - config['sl'] / 100)
-                else:
-                    ex = trade['optionentry'] + config['tp']
-                    sl = trade['optionentry'] - config['sl']
+                ex, sl = self._price_exit_levels(
+                    trade['optionentry'],
+                    config['tp'],
+                    config['sl'],
+                    is_sell=False,
+                    percentage=config['pct_point'],
+                )
 
                 # ------------------ TIME CONDITIONS ------------------
                 now = datetime.datetime.now()
@@ -9419,10 +9830,18 @@ class Exchange:
                     exit_reason = "Max Loss"
                 elif config['trail'] and trade['trail_stoploss'] and pnl <= trade['trail_stoploss'] * config['lot']:
                     exit_reason = "Trailing SL"
-                elif not config['pnlexit_tpslexit'] and price > ex:
-                    exit_reason = "TP Hit"
-                elif not config['pnlexit_tpslexit'] and price < sl:
-                    exit_reason = "SL Hit"
+                elif (
+                    not config['pnlexit_tpslexit']
+                    and (
+                        price_exit_reason := self._price_exit_reason(
+                            price,
+                            ex,
+                            sl,
+                            is_sell=False,
+                        )
+                    )
+                ):
+                    exit_reason = price_exit_reason
                 elif trade.get('decision') == 'exitit':
                     exit_reason = "User Exit"
                 elif config['status'] in ['paused', 'closed']:
@@ -9436,13 +9855,50 @@ class Exchange:
                 if exit_reason:
                     if trade.get('live'):
                         try:
-                            self.mainbuyexit(trade, config)
+                            exit_result = self.mainbuyexit(trade, config)
                         except Exception as order_error:
                             print(
                                 f"Live OBUYEXIT order deferred for "
                                 f"{trade.get('user')}/{trade.get('optionname')}: {order_error}"
                             )
                             return False
+                    else:
+                        open_quantity = self._open_position_quantity(trade)
+                        exit_result = {
+                            'success': True,
+                            'requested_quantity': open_quantity,
+                            'filled_quantity': open_quantity,
+                            'response': {'status': 'success', 'broker': 'paper'},
+                        }
+
+                    fully_closed = self._apply_exit_fill(
+                        trade,
+                        'SELL',
+                        exit_result,
+                    )
+                    trading_event(
+                        "position_state_after_exit_order",
+                        force=True,
+                        user=trade.get("user"),
+                        strategy_id=trade.get("botcode"),
+                        symbol=trade.get("optionname"),
+                        exit_reason=exit_reason,
+                        buy_quantity=trade.get("buy_quantity"),
+                        sell_quantity=trade.get("sell_quantity"),
+                        net_quantity=trade.get("net_quantity"),
+                        exit_order_state=trade.get("exit_order_state"),
+                    )
+                    if not fully_closed:
+                        trade['decision'] = 'exitit'
+                        self.opositions_collection.update_one(
+                            {'_id': trade['_id']},
+                            {'$set': trade},
+                        )
+                        self.strategy_collection.update_one(
+                            {'_id': config['_id']},
+                            {'$set': {'position': 'in'}},
+                        )
+                        return False
 
                     print(f"{now} :: {trade['user']} :: ### {exit_reason} ###")
 
@@ -9488,7 +9944,7 @@ class Exchange:
 
     def OSELL(self, trade, OTYPE, Signal):
         try:
-            if trade.get('live') and trade.get('entry_order_state') in {'attempted', 'broker_failed'}:
+            if trade.get('live') and trade.get('entry_order_state') in {'submitting', 'attempted', 'broker_failed'}:
                 return
             if trade.get('live') and trade.get('entry_order_state') == 'preflight_failed':
                 retry_after = int(
@@ -9582,6 +10038,9 @@ class Exchange:
 
             print(f"option price: {pricesss}")
 
+            if not self._claim_entry_submission(trade, Signal, option):
+                return
+
             # ---------- ORDER EXECUTION ---------- #
 
             broker_order_results = []
@@ -9598,6 +10057,17 @@ class Exchange:
                     }
                 )
                 trade['entry_order_state'] = 'attempted'
+                if not self._entry_submission_still_current(trade):
+                    self._release_stale_entry_submission(trade)
+                    trading_event(
+                        "strategy_entry_cancelled_before_broker",
+                        force=True,
+                        user=trade.get("user"),
+                        strategy_id=trade.get("botcode"),
+                        signal_id=trade.get("entry_signal_id"),
+                        symbol=option,
+                    )
+                    return
 
                 broker_info = self.broker_collection.find_one(
                     {'user': trade['user']}
@@ -9635,6 +10105,19 @@ class Exchange:
                 for quant in total_quant:
 
                     qty = int(optionlot) * int(quant)
+                    trading_event(
+                        "broker_order_request",
+                        force=True,
+                        user=trade.get("user"),
+                        strategy_id=trade.get("botcode"),
+                        signal_id=trade.get("entry_signal_id"),
+                        broker=broker,
+                        action="SELL",
+                        symbol=option,
+                        exchange=exch,
+                        quantity=qty,
+                        order_type="MARKET_OR_BROKER_CONFIGURED",
+                    )
 
                     ret = None
 
@@ -9773,6 +10256,15 @@ class Exchange:
             broker_order_success = (not trade['live']) or any(
                 result['success'] for result in broker_order_results
             )
+            requested_quantity = int(optionlot) * int(trade['lot'])
+            filled_quantity = (
+                requested_quantity
+                if not trade['live']
+                else self._filled_quantity_from_broker_results(
+                    broker_order_results,
+                    requested_quantity,
+                )
+            )
 
             # ---------- POSITION STORE ---------- #
 
@@ -9821,21 +10313,56 @@ class Exchange:
                 'botcode': trade['botcode'],
                 'optiontoken': int(optiontoken),
                 'trail_stoploss': 0,
-                'broker_order_results': broker_order_results
+                'broker_order_results': broker_order_results,
+                'signal_id': trade.get('entry_signal_id'),
+                'lifecycle_revision': int(trade.get('lifecycle_revision') or 0),
+                'entry_order_id': next(
+                    (
+                        self._extract_broker_order_id(result.get('response'))
+                        for result in broker_order_results
+                        if result.get('success')
+                        and self._extract_broker_order_id(result.get('response'))
+                    ),
+                    None,
+                ),
+                'entry_quantity': filled_quantity,
+                'buy_quantity': 0,
+                'sell_quantity': filled_quantity,
+                'net_quantity': -filled_quantity,
             }
+            if broker_order_success and not self._entry_submission_still_current(trade):
+                pos['decision'] = 'exitit'
+                pos['lifecycle_exit_reason'] = 'strategy_changed_during_entry'
 
             self.opositions_collection.insert_one(pos)
 
             if broker_order_success:
                 self.strategy_collection.update_one(
-                    {'botcode': trade['botcode']},
+                    {'botcode': trade['botcode'], 'user': trade['user']},
                     {'$set': {'position': 'in', 'entry_order_state': 'success'}}
                 )
             else:
                 self.strategy_collection.update_one(
-                    {'botcode': trade['botcode']},
+                    {'botcode': trade['botcode'], 'user': trade['user']},
                     {'$set': {'position': 'out', 'entry_order_state': 'broker_failed', 'last_broker_order_error': broker_order_results}}
                 )
+            trading_event(
+                "position_state_after_entry_order",
+                force=True,
+                user=trade.get("user"),
+                strategy_id=trade.get("botcode"),
+                signal_id=trade.get("entry_signal_id"),
+                symbol=option,
+                broker_order_success=broker_order_success,
+                entry_order_id=pos.get("entry_order_id"),
+                buy_quantity=pos.get("buy_quantity"),
+                sell_quantity=pos.get("sell_quantity"),
+                net_quantity=pos.get("net_quantity"),
+                position_after="in" if broker_order_success else "out",
+                entry_order_state_after=(
+                    "success" if broker_order_success else "broker_failed"
+                ),
+            )
 
         except Exception as e:
             error_text = str(e)
@@ -9893,16 +10420,38 @@ class Exchange:
             def execute_exit(reason, current_trade, current_user):
                 print(f"{datetime.datetime.now()} :: {current_user} :: ### {reason} ###")
 
-                current_trade['status'] = 'close'
-                config['position'] = 'out'
-
-                update_lot_after_exit(current_trade, config)
-
                 if current_trade['live']:
                     if current_trade['side'] == 'BUY':
-                        self.mainbuyexit(current_trade, config)
+                        exit_result = self.mainbuyexit(current_trade, config)
+                        exit_side = 'SELL'
                     else:
-                        self.mainsellexit(current_trade, config)
+                        exit_result = self.mainsellexit(current_trade, config)
+                        exit_side = 'BUY'
+                else:
+                    open_quantity = self._open_position_quantity(current_trade)
+                    exit_result = {
+                        'success': True,
+                        'requested_quantity': open_quantity,
+                        'filled_quantity': open_quantity,
+                        'response': {'status': 'success', 'broker': 'paper'},
+                    }
+                    exit_side = 'SELL' if current_trade['side'] == 'BUY' else 'BUY'
+
+                fully_closed = self._apply_exit_fill(
+                    current_trade,
+                    exit_side,
+                    exit_result,
+                )
+                if not fully_closed:
+                    current_trade['decision'] = 'exitit'
+                    config['position'] = 'in'
+                    return False
+
+                current_trade['status'] = 'close'
+                config['position'] = 'out'
+                current_trade['exit_reason'] = reason
+                update_lot_after_exit(current_trade, config)
+                return True
 
             trades = list(
                 self.opositions_collection.find({
@@ -9986,23 +10535,14 @@ class Exchange:
                     trade['trail_stoploss'] = 0
 
                 # ---- TP/SL Calculation ----
-                if config['pct_point']:
-
-                    if trade['side'] == 'BUY':
-                        ex = trade['optionentry'] * (1 + config['tp'] / 100)
-                        sl = trade['optionentry'] * (1 - config['sl'] / 100)
-                    else:
-                        ex = trade['optionentry'] * (1 - config['tp'] / 100)
-                        sl = trade['optionentry'] * (1 + config['sl'] / 100)
-
-                else:
-
-                    if trade['side'] == 'BUY':
-                        ex = trade['optionentry'] + config['tp']
-                        sl = trade['optionentry'] - config['sl']
-                    else:
-                        ex = trade['optionentry'] - config['tp']
-                        sl = trade['optionentry'] + config['sl']
+                is_sell_position = trade['side'] == 'SELL'
+                ex, sl = self._price_exit_levels(
+                    trade['optionentry'],
+                    config['tp'],
+                    config['sl'],
+                    is_sell=is_sell_position,
+                    percentage=config['pct_point'],
+                )
 
                 # ---- Rollover Calculation ----
                 rollover = (
@@ -10045,11 +10585,22 @@ class Exchange:
                 ):
                     execute_exit("DAY TRAIL SL HIT", trade, userr)
 
-                elif price > ex and not config['pnlexit_tpslexit']:
-                    execute_exit("TP HIT", trade, userr)
-
-                elif price < sl and not config['pnlexit_tpslexit']:
-                    execute_exit("SL HIT", trade, userr)
+                elif (
+                    not config['pnlexit_tpslexit']
+                    and (
+                        price_exit_reason := self._price_exit_reason(
+                            price,
+                            ex,
+                            sl,
+                            is_sell=is_sell_position,
+                        )
+                    )
+                ):
+                    execute_exit(
+                        price_exit_reason.upper(),
+                        trade,
+                        userr,
+                    )
 
                 elif trade['decision'] == 'exitit':
                     execute_exit("USER EXIT HIT", trade, userr)
@@ -10205,12 +10756,13 @@ class Exchange:
                     trade['trail_stoploss'] = 0
 
                 # ------------------ TP / SL ------------------
-                if config['pct_point']:
-                    ex = trade['optionentry'] * (1 + config['tp'] / 100)
-                    sl = trade['optionentry'] * (1 - config['sl'] / 100)
-                else:
-                    ex = trade['optionentry'] + config['tp']
-                    sl = trade['optionentry'] - config['sl']
+                ex, sl = self._price_exit_levels(
+                    trade['optionentry'],
+                    config['tp'],
+                    config['sl'],
+                    is_sell=True,
+                    percentage=config['pct_point'],
+                )
 
                 # ------------------ TIME CONDITIONS ------------------
                 now_time = now.time()
@@ -10249,11 +10801,18 @@ class Exchange:
                 elif pnl <= -config['maxloss'] * config['lot']:
                     exit_reason = "Max Loss"
 
-                elif not config['pnlexit_tpslexit'] and price > ex:
-                    exit_reason = "TP Hit"
-
-                elif not config['pnlexit_tpslexit'] and price < sl:
-                    exit_reason = "SL Hit"
+                elif (
+                    not config['pnlexit_tpslexit']
+                    and (
+                        price_exit_reason := self._price_exit_reason(
+                            price,
+                            ex,
+                            sl,
+                            is_sell=True,
+                        )
+                    )
+                ):
+                    exit_reason = price_exit_reason
 
                 elif trade.get('decision') == 'exitit':
                     exit_reason = "User Exit"
@@ -10271,13 +10830,50 @@ class Exchange:
                 if exit_reason:
                     if trade.get('live'):
                         try:
-                            self.mainsellexit(trade, config)
+                            exit_result = self.mainsellexit(trade, config)
                         except Exception as order_error:
                             print(
                                 f"Live OSELLEXIT order deferred for "
                                 f"{trade.get('user')}/{trade.get('optionname')}: {order_error}"
                             )
                             return False
+                    else:
+                        open_quantity = self._open_position_quantity(trade)
+                        exit_result = {
+                            'success': True,
+                            'requested_quantity': open_quantity,
+                            'filled_quantity': open_quantity,
+                            'response': {'status': 'success', 'broker': 'paper'},
+                        }
+
+                    fully_closed = self._apply_exit_fill(
+                        trade,
+                        'BUY',
+                        exit_result,
+                    )
+                    trading_event(
+                        "position_state_after_exit_order",
+                        force=True,
+                        user=trade.get("user"),
+                        strategy_id=trade.get("botcode"),
+                        symbol=trade.get("optionname"),
+                        exit_reason=exit_reason,
+                        buy_quantity=trade.get("buy_quantity"),
+                        sell_quantity=trade.get("sell_quantity"),
+                        net_quantity=trade.get("net_quantity"),
+                        exit_order_state=trade.get("exit_order_state"),
+                    )
+                    if not fully_closed:
+                        trade['decision'] = 'exitit'
+                        self.opositions_collection.update_one(
+                            {'_id': trade['_id'], 'entry_id': trade['entry_id']},
+                            {'$set': trade},
+                        )
+                        self.strategy_collection.update_one(
+                            {'botcode': trade['botcode'], 'user': trade['user']},
+                            {'$set': {'position': 'in'}},
+                        )
+                        return False
 
                     print(f"{now} :: {userr} :: ### {exit_reason} ###")
 
@@ -11244,6 +11840,12 @@ class Exchange:
             pass
 
     def _extract_broker_order_id(self, ret):
+        if isinstance(ret, list):
+            for item in ret:
+                broker_order_id = self._extract_broker_order_id(item)
+                if broker_order_id:
+                    return broker_order_id
+            return None
         if not isinstance(ret, dict):
             return None
         for key in ('brokerOrderId', 'order_id', 'orderId', 'id', 'NOrdNo', 'nestOrderNumber'):
@@ -11524,6 +12126,103 @@ class Exchange:
         )
         return result
 
+    def _filled_quantity_from_response(self, response, fallback=0):
+        if isinstance(response, list):
+            quantities = [
+                self._filled_quantity_from_response(item, 0)
+                for item in response
+            ]
+            return sum(quantity for quantity in quantities if quantity > 0) or int(fallback)
+        if not isinstance(response, dict):
+            return int(fallback)
+        for key in (
+            'filled_quantity', 'filledQuantity', 'filledQty', 'fillshares',
+            'tradedQuantity', 'traded_qty', 'executed_quantity',
+        ):
+            value = response.get(key)
+            if value not in (None, ''):
+                try:
+                    return max(0, int(float(value)))
+                except (TypeError, ValueError):
+                    pass
+        for key in ('data', 'result', 'order'):
+            nested = response.get(key)
+            if isinstance(nested, (dict, list)):
+                quantity = self._filled_quantity_from_response(nested, 0)
+                if quantity > 0:
+                    return quantity
+        return int(fallback)
+
+    def _filled_quantity_from_broker_results(self, results, fallback=0):
+        filled = 0
+        successful_result = False
+        for result in results or []:
+            if not result.get('success'):
+                continue
+            successful_result = True
+            filled += self._filled_quantity_from_response(
+                result.get('response'),
+                result.get('quantity') or 0,
+            )
+        if successful_result:
+            return filled or int(fallback)
+        return 0
+
+    def _open_position_quantity(self, position):
+        buy_quantity = int(position.get('buy_quantity') or 0)
+        sell_quantity = int(position.get('sell_quantity') or 0)
+        if buy_quantity or sell_quantity:
+            return abs(buy_quantity - sell_quantity)
+        if position.get('entry_quantity') not in (None, ''):
+            return max(0, int(position.get('entry_quantity') or 0))
+        return max(
+            0,
+            int(position.get('optionlot') or 0) * int(position.get('lot') or 0),
+        )
+
+    def _apply_exit_fill(self, position, exit_side, result):
+        entry_quantity = int(
+            position.get('entry_quantity')
+            or (
+                int(position.get('optionlot') or 0)
+                * int(position.get('initial_lot') or position.get('lot') or 0)
+            )
+        )
+        buy_quantity = int(position.get('buy_quantity') or 0)
+        sell_quantity = int(position.get('sell_quantity') or 0)
+        if not buy_quantity and not sell_quantity and entry_quantity:
+            if (
+                position.get('BSmode') is False
+                or str(position.get('side') or '').upper() == 'SELL'
+            ):
+                sell_quantity = entry_quantity
+            else:
+                buy_quantity = entry_quantity
+
+        filled_quantity = int(result.get('filled_quantity') or 0)
+        if exit_side == 'SELL':
+            sell_quantity += filled_quantity
+        else:
+            buy_quantity += filled_quantity
+        net_quantity = buy_quantity - sell_quantity
+        position.update({
+            'entry_quantity': entry_quantity,
+            'buy_quantity': buy_quantity,
+            'sell_quantity': sell_quantity,
+            'net_quantity': net_quantity,
+            'exit_quantity': int(result.get('requested_quantity') or 0),
+            'exit_filled_quantity': filled_quantity,
+            'exit_order_state': (
+                'failed'
+                if not result.get('success')
+                else 'filled'
+                if net_quantity == 0
+                else 'partial'
+            ),
+            'exit_order_response': self._json_safe(result.get('response')),
+        })
+        return bool(result.get('success')) and net_quantity == 0
+
     def _entry_price_from_broker_results(self, broker_order_results, fallback_price):
         prices = []
         for result in broker_order_results or []:
@@ -11545,7 +12244,67 @@ class Exchange:
             return int((float(entry_price) - float(current_price)) * int(lot) * int(optionlot))
         return int((float(current_price) - float(entry_price)) * int(lot) * int(optionlot))
 
-    def _place_broker_order(self, trade, config, broker, transaction_type, product_type, quantity, side_override=None):
+    @staticmethod
+    def _price_exit_levels(entry_price, target, stop_loss, *, is_sell, percentage):
+        entry_price = float(entry_price)
+        target = float(target)
+        stop_loss = float(stop_loss)
+        if percentage:
+            target_delta = entry_price * target / 100
+            stop_delta = entry_price * stop_loss / 100
+        else:
+            target_delta = target
+            stop_delta = stop_loss
+        if is_sell:
+            return entry_price - target_delta, entry_price + stop_delta
+        return entry_price + target_delta, entry_price - stop_delta
+
+    @staticmethod
+    def _price_exit_reason(price, target_price, stop_price, *, is_sell):
+        price = float(price)
+        if is_sell:
+            if price <= float(target_price):
+                return "TP Hit"
+            if price >= float(stop_price):
+                return "SL Hit"
+        else:
+            if price >= float(target_price):
+                return "TP Hit"
+            if price <= float(stop_price):
+                return "SL Hit"
+        return None
+
+    @staticmethod
+    def _directional_target_stop_flags(
+        entry_price,
+        current_price,
+        target_1,
+        target_2,
+        stop_loss,
+        *,
+        direction,
+    ):
+        entry_price = float(entry_price)
+        current_price = float(current_price)
+        target_1 = float(target_1)
+        target_2 = float(target_2)
+        stop_loss = float(stop_loss)
+        downside = str(direction or "").strip().lower() in {
+            "dn side", "down side", "downside", "sell"
+        }
+        if downside:
+            return {
+                "tp1": current_price <= entry_price - target_1,
+                "tp2": current_price <= entry_price - target_2,
+                "sl": current_price >= entry_price + stop_loss,
+            }
+        return {
+            "tp1": current_price >= entry_price + target_1,
+            "tp2": current_price >= entry_price + target_2,
+            "sl": current_price <= entry_price - stop_loss,
+        }
+
+    def _place_broker_order(self, trade, config, broker, transaction_type, product_type, quantity, side_override=None, quantity_is_units=False):
         """Centralized order placement logic for all brokers"""
         z = self.broker_collection.find_one({'user': trade['user']})
         selected_broker = z['selectedbroker'] if z else broker
@@ -11555,7 +12314,7 @@ class Exchange:
         optiontoken = trade['optiontoken']
         exch = trade['exch']
         optionlot = int(trade['optionlot'])
-        total_quantity = optionlot * quantity
+        total_quantity = int(quantity) if quantity_is_units else optionlot * quantity
         trading_event(
             "broker_order_request",
             user=trade.get("user"),
@@ -11725,6 +12484,60 @@ class Exchange:
         print(ret)
         return ret
 
+    def _execute_exit_for_open_quantity(self, trade, config, transaction_type):
+        open_quantity = self._open_position_quantity(trade)
+        if open_quantity <= 0:
+            return {
+                'success': True,
+                'requested_quantity': 0,
+                'filled_quantity': 0,
+                'response': {'status': 'success', 'message': 'position already flat'},
+            }
+        trading_event(
+            "exit_quantity_calculated",
+            force=True,
+            user=trade.get("user"),
+            strategy_id=trade.get("botcode"),
+            symbol=trade.get("optionname"),
+            transaction_type=transaction_type,
+            buy_quantity=trade.get("buy_quantity"),
+            sell_quantity=trade.get("sell_quantity"),
+            net_quantity=trade.get("net_quantity"),
+            requested_quantity=open_quantity,
+        )
+        response = self._place_broker_order(
+            trade,
+            config,
+            None,
+            transaction_type,
+            config.get('positiontype', ''),
+            open_quantity,
+            quantity_is_units=True,
+        )
+        success = self._broker_order_ok(response)
+        filled_quantity = (
+            self._filled_quantity_from_response(response, open_quantity)
+            if success else 0
+        )
+        trading_event(
+            "broker_exit_order_response",
+            force=True,
+            user=trade.get("user"),
+            strategy_id=trade.get("botcode"),
+            symbol=trade.get("optionname"),
+            transaction_type=transaction_type,
+            requested_quantity=open_quantity,
+            filled_quantity=filled_quantity,
+            success=success,
+            response=self._json_safe(response),
+        )
+        return {
+            'success': success,
+            'requested_quantity': open_quantity,
+            'filled_quantity': min(open_quantity, filled_quantity),
+            'response': response,
+        }
+
     def _execute_order_with_slicing(self, trade, config, transaction_type, side_override=None):
         """Execute order with optional quantity slicing"""
         lot = int(trade['lot'])
@@ -11751,7 +12564,11 @@ class Exchange:
         else:
             transaction_type = 'SELL'
         
-        self._execute_order_with_slicing(trade, config, transaction_type)
+        return self._execute_exit_for_open_quantity(
+            trade,
+            config,
+            transaction_type,
+        )
 
     def mainsplitbuyexit(self, trade, config):
         """Split exit for buy positions - always SELL"""
@@ -11763,11 +12580,11 @@ class Exchange:
 
     def mainbuyexit(self, trade, config):
         """Buy exit with slicing - always SELL"""
-        self._execute_order_with_slicing(trade, config, 'SELL')
+        return self._execute_exit_for_open_quantity(trade, config, 'SELL')
 
     def mainsellexit(self, trade, config):
         """Sell exit with slicing - always BUY"""
-        self._execute_order_with_slicing(trade, config, 'BUY')
+        return self._execute_exit_for_open_quantity(trade, config, 'BUY')
 
     def _isholiday(self):
         if datetime.date.today().strftime('%A') not in ['Saturday', 'Sunday']:

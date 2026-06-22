@@ -863,6 +863,282 @@ def _dhan_api_result(action, user_name, services, callback):
         )
 
 
+DHAN_POSTBACK_STATUS_MAP = {
+    "TRANSIT": "submitted",
+    "PENDING": "submitted",
+    "PART_TRADED": "partial_fill",
+    "TRADED": "filled",
+    "REJECTED": "rejected",
+    "CANCELLED": "cancelled",
+    "EXPIRED": "cancelled",
+}
+
+
+def _dhan_postback_user(db, dhan_client_id):
+    for row in db["apis"].find({"broker": "dhan"}):
+        try:
+            saved = canonicalize_dhan_credentials(row)
+        except Exception:
+            continue
+        if secrets.compare_digest(
+            str(saved.get("dhanClientId") or ""),
+            str(dhan_client_id or ""),
+        ):
+            return str(row.get("user") or "")
+    return ""
+
+
+@broker_router.post("/dhan/postback", response_model=ApiResponse)
+async def dhan_postback(request: Request):
+    configured_secret = str(AppConfig.DHAN_POSTBACK_SECRET or "").strip()
+    supplied_secret = str(request.query_params.get("token") or "").strip()
+    if configured_secret and not secrets.compare_digest(configured_secret, supplied_secret):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Dhan postback token",
+        )
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Dhan postback body must be valid JSON",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Dhan postback body must be a JSON object",
+        )
+
+    dhan_client_id = str(payload.get("dhanClientId") or "").strip()
+    order_id = str(payload.get("orderId") or "").strip()
+    order_status = str(payload.get("orderStatus") or "").strip().upper()
+    if not dhan_client_id or not order_id or not order_status:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Dhan postback requires dhanClientId, orderId, and orderStatus",
+        )
+
+    db = get_database()
+    user_name = _dhan_postback_user(db, dhan_client_id)
+    if not user_name:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unknown Dhan client",
+        )
+
+    now = datetime.datetime.now(datetime.UTC)
+    normalized_status = DHAN_POSTBACK_STATUS_MAP.get(order_status)
+    event_data = {
+        "broker": "dhan",
+        "broker_order_id": order_id,
+        "broker_status": order_status,
+        "filled_quantity": payload.get("filled_qty"),
+        "average_traded_price": payload.get("averageTradedPrice"),
+        "oms_error_code": payload.get("omsErrorCode"),
+        "oms_error_description": payload.get("omsErrorDescription"),
+        "postback": True,
+    }
+
+    legacy_result = db["order_logs"].update_one(
+        {
+            "user": user_name,
+            "broker": "dhan",
+            "$or": [
+                {"orderId": order_id},
+                {"order_id": order_id},
+                {"broker_order_id": order_id},
+            ],
+        },
+        {
+            "$set": {
+                "postbackPayload": payload,
+                "postbackStatus": order_status,
+                "status": normalized_status or order_status.lower(),
+                "updatedAt": now,
+            }
+        },
+    )
+
+    normalized_update = {
+        "$set": {
+            "broker_order_id": order_id,
+            "postback_status": order_status,
+            "postback_payload": payload,
+            "updated_at": now,
+        },
+        "$push": {
+            "events": {
+                "status": normalized_status or "submitted",
+                "at": now,
+                "data": event_data,
+            }
+        },
+    }
+    if normalized_status:
+        normalized_update["$set"]["status"] = normalized_status
+    normalized_result = db["normalized_orders"].update_one(
+        {
+            "user": user_name,
+            "broker": "dhan",
+            "$or": [
+                {"broker_order_id": order_id},
+                {"events.data.broker_order_id": order_id},
+            ],
+        },
+        normalized_update,
+    )
+
+    legacy_position_matched = 0
+    legacy_position_closed = False
+    leg_exit_status = {
+        "TRADED": "complete",
+        "REJECTED": "failed",
+        "CANCELLED": "failed",
+        "EXPIRED": "failed",
+    }.get(order_status, "submitted")
+    for position in db["Opositions"].find({
+        "user": user_name,
+        "status": {"$in": ["open", "exit_pending", "exit_failed"]},
+    }):
+        legs = list(position.get("pos") or [])
+        matched_leg = False
+        for leg in legs:
+            if str(leg.get("exit_order_id") or "") != order_id:
+                continue
+            leg["exit_order_status"] = leg_exit_status
+            leg["exit_order_response"] = payload
+            if leg_exit_status == "complete":
+                leg["decision"] = "exit"
+            matched_leg = True
+        if not matched_leg:
+            continue
+
+        legacy_position_matched += 1
+        exit_statuses = [
+            str(leg.get("exit_order_status") or "")
+            for leg in legs
+            if leg.get("exit_order_id")
+        ]
+        all_complete = bool(exit_statuses) and all(
+            item == "complete" for item in exit_statuses
+        )
+        any_failed = any(item == "failed" for item in exit_statuses)
+        position_status = (
+            "close" if all_complete
+            else "exit_failed" if any_failed
+            else "exit_pending"
+        )
+        db["Opositions"].update_one(
+            {"_id": position["_id"]},
+            {
+                "$set": {
+                    "pos": legs,
+                    "status": position_status,
+                    "updated_at": now,
+                }
+            },
+        )
+        if all_complete:
+            legacy_position_closed = True
+            db["strategies"].update_one(
+                {
+                    "user": user_name,
+                    "botcode": position.get("botcode"),
+                },
+                {
+                    "$set": {
+                        "position": "out",
+                        "entry_order_state": "",
+                        "updated_at": now,
+                    },
+                    "$unset": {
+                        "entry_locks": "",
+                        "fractal_fire_state": "",
+                        "fractal_fire_time": "",
+                        "fractal_fire_reason": "",
+                    },
+                },
+            )
+
+    db["broker_health"].update_one(
+        {"user": user_name, "broker": "dhan"},
+        {
+            "$set": {
+                "last_postback_at": now,
+                "last_postback_order_id": order_id,
+                "last_postback_status": order_status,
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "user": user_name,
+                "broker": "dhan",
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+    db["broker_postbacks"].insert_one(
+        {
+            "user": user_name,
+            "broker": "dhan",
+            "order_id": order_id,
+            "order_status": order_status,
+            "payload": payload,
+            "received_at": now,
+        }
+    )
+
+    legacy_matched = getattr(legacy_result, "matched_count", 0)
+    normalized_matched = getattr(normalized_result, "matched_count", 0)
+    trading_event(
+        "dhan_postback_received",
+        broker="dhan",
+        user=user_name,
+        dhan_client_id=dhan_client_id,
+        order_id=order_id,
+        order_status=order_status,
+        normalized_status=normalized_status or "",
+        order_log_matched=legacy_matched,
+        normalized_order_matched=normalized_matched,
+        legacy_position_matched=legacy_position_matched,
+        legacy_position_closed=legacy_position_closed,
+        force=True,
+    )
+    AuditLogService(db).record(
+        "dhan_postback_received",
+        user=user_name,
+        resource_type="broker_order",
+        resource_id=order_id,
+        details={
+            "broker": "dhan",
+            "order_status": order_status,
+            "normalized_status": normalized_status or "",
+            "filled_quantity": payload.get("filled_qty"),
+            "order_log_matched": legacy_matched,
+            "normalized_order_matched": normalized_matched,
+            "legacy_position_matched": legacy_position_matched,
+            "legacy_position_closed": legacy_position_closed,
+        },
+    )
+    return ApiResponse(
+        success=True,
+        message="Dhan postback received",
+        data={
+            "order_id": order_id,
+            "status": order_status,
+            "matched": bool(
+                legacy_matched
+                or normalized_matched
+                or legacy_position_matched
+            ),
+            "legacy_position_matched": legacy_position_matched,
+            "legacy_position_closed": legacy_position_closed,
+        },
+    )
+
+
 @broker_router.get("/dhan/profile", response_model=ApiResponse)
 def dhan_profile(
     response: Response,

@@ -1,5 +1,10 @@
+import asyncio
 from bson import ObjectId
+from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
+from fastapi import HTTPException
 
 from connectors.connector import Exchange
 
@@ -111,6 +116,33 @@ def test_fractal_hedge_stop_exits_each_sell_leg_once_as_buy(fake_db):
     assert {leg["exit_order_status"] for leg in saved["pos"]} == {"complete"}
 
 
+def test_aliceblue_list_response_preserves_exit_order_ids(fake_db):
+    alice = FakeAliceBlue(
+        [
+            [{"status": "Ok", "result": [{"brokerOrderId": "LIST-PE"}]}],
+            [{"status": "Ok", "result": [{"brokerOrderId": "LIST-CE"}]}],
+        ],
+        complete_order_ids={"LIST-PE", "LIST-CE"},
+    )
+    exchange = _exchange(fake_db, alice)
+    fake_db["strategies"].insert_one(_trade())
+    oposition = _oposition()
+    fake_db["Opositions"].insert_one(oposition)
+
+    assert exchange._handle_aliceblue_fractal_hedge_exit(
+        _trade(),
+        oposition,
+        "stop",
+    )
+
+    saved = fake_db["Opositions"].find_one({"_id": oposition["_id"]})
+    assert {leg["exit_order_id"] for leg in saved["pos"]} == {
+        "LIST-PE",
+        "LIST-CE",
+    }
+    assert saved["status"] == "close"
+
+
 def test_repeated_fractal_hedge_stop_does_not_duplicate_exit_orders(fake_db):
     alice = FakeAliceBlue(
         [
@@ -174,6 +206,17 @@ def test_fractal_hedge_entry_group_lock_is_single_winner(fake_db):
     assert saved["entry_order_state"] == "submitting"
 
 
+def test_fractal_entry_group_lock_rejects_strategy_with_active_position(fake_db):
+    exchange = _exchange(fake_db, FakeAliceBlue([]))
+    trade = _trade(status="opened", position="in")
+    fake_db["strategies"].insert_one(trade)
+
+    assert not exchange._lock_fractal_hedge_entry_group(
+        trade,
+        "FRACTALNUBIATIMEHEDGEORDER.entry",
+    )
+
+
 def test_fractal_hedge_entry_leg_lock_prevents_duplicate_leg_order(fake_db):
     exchange = _exchange(fake_db, FakeAliceBlue([]))
     trade = _trade(status="opened", position="out")
@@ -212,3 +255,74 @@ def test_generic_strategy_dispatch_does_not_run_fractal_hedge_entry(fake_db):
     exchange.process_strategy(_trade(status="opened", position="out"))
 
     exchange.FRACTALNUBIATIMEHEDGEORDER.assert_not_called()
+
+
+def test_fractal_reset_keeps_exit_pending_position_active(fake_db, monkeypatch):
+    from app.api.legacy_compat import common
+
+    fake_db["strategies"].insert_one(
+        _trade(status="paused", position="out", entry_order_state="submitted")
+    )
+    fake_db["Opositions"].insert_one({
+        "user": "alice",
+        "botcode": "fractal-1",
+        "status": "exit_pending",
+        "pos": [],
+    })
+    monkeypatch.setattr(
+        common,
+        "collection",
+        lambda name: fake_db[name],
+    )
+
+    update = common.fractal_reset_update(
+        "fractal-1",
+        "alice",
+        {"status": "opened"},
+    )
+
+    assert update["$set"]["position"] == "in"
+    assert "$unset" not in update
+
+
+def test_start_rejects_unresolved_fractal_exit(fake_db, monkeypatch):
+    from app.api.legacy_compat import strategies
+
+    fake_db["strategies"].insert_one(
+        _trade(status="paused", position="out")
+    )
+    fake_db["Opositions"].insert_one({
+        "_id": ObjectId(),
+        "user": "alice",
+        "botcode": "fractal-1",
+        "status": "exit_failed",
+        "pos": [],
+    })
+
+    async def fake_payload(_request):
+        return {"id": "fractal-1"}
+
+    monkeypatch.setattr(strategies, "get_database", lambda: fake_db)
+    monkeypatch.setattr(strategies, "payload_from_request", fake_payload)
+    monkeypatch.setattr(
+        strategies,
+        "WorkerControlService",
+        lambda _db: SimpleNamespace(
+            get_status=lambda: {
+                "healthy": True,
+                "strategy_engine": "running",
+            }
+        ),
+    )
+    monkeypatch.setattr(strategies, "trading_event", lambda *args, **kwargs: None)
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            strategies.api_start_ssalgo(
+                object(),
+                user={"username": "alice"},
+            )
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.detail["position_status"] == "exit_failed"

@@ -227,6 +227,27 @@ class TradingWorker:
                 break
             try:
                 mode = str(job.get("mode") or "paper").lower()
+                strategy_id = str(
+                    job.get("strategy_id") or job.get("botcode") or ""
+                )
+                if strategy_id:
+                    strategy = self.db["strategies"].find_one({
+                        "user": job.get("user"),
+                        "botcode": strategy_id,
+                    })
+                    if not strategy or strategy.get("status") != "opened":
+                        raise RuntimeError(
+                            "Strategy is not active; queued order suppressed"
+                        )
+                    job_revision = job.get("lifecycle_revision")
+                    if (
+                        job_revision is not None
+                        and int(job_revision)
+                        != int(strategy.get("lifecycle_revision") or 0)
+                    ):
+                        raise RuntimeError(
+                            "Stale strategy lifecycle revision; queued order suppressed"
+                        )
                 broker = "paper" if mode == "paper" else str(job.get("broker") or "")
                 if not broker:
                     broker_row = self.db["broker"].find_one({"user": job.get("user")}) or {}
@@ -248,7 +269,7 @@ class TradingWorker:
                     product_type=str(job.get("product_type", "INTRADAY")),
                     order_type=str(job.get("order_type", "MARKET")),
                     price=float(job.get("price", 1) or 1),
-                    strategy_id=str(job.get("strategy_id") or job.get("botcode") or ""),
+                    strategy_id=strategy_id,
                     metadata={**dict(job.get("metadata") or {}), **dict(job), "job_id": job.get("_id")},
                 )
                 trading_event(

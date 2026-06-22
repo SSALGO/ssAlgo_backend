@@ -175,6 +175,32 @@ def test_legacy_dashboard_exposes_mcx_strategy_creator(fake_db, monkeypatch):
     assert response.data["allstrategies"]["MCX Commodity Strategy"] == "add_mcxstrategy_form"
 
 
+def test_legacy_dashboard_exposes_position_buy_sell_and_net_quantities(fake_db, monkeypatch):
+    from app.api.legacy_compat import dashboard
+
+    fake_db["subscriptionperiod"].insert_one({"user": "alice", "end": "2099-12-31"})
+    fake_db["Opositions"].insert_one({
+        "user": "alice",
+        "status": "open",
+        "decision": "intrade",
+        "BSmode": True,
+        "optionlot": 50,
+        "lot": 2,
+        "initial_lot": 2,
+        "optionname": "NIFTY24JUN22000CE",
+        "pnl": 125,
+    })
+    monkeypatch.setattr(dashboard, "get_database", lambda: fake_db)
+
+    response = dashboard.api_index(user={"username": "alice", "admin": False})
+    position = response.data["opositions"][0]
+
+    assert position["buy_quantity"] == 100
+    assert position["sell_quantity"] == 0
+    assert position["net_quantity"] == 100
+    assert position["is_open"] is True
+
+
 def test_broker_secret_reveal_is_owner_scoped_audited_and_not_cached(fake_db, monkeypatch):
     from app.api import fastapi_routers
     from app.api.fastapi_auth import get_current_user

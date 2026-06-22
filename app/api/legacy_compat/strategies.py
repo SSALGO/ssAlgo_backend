@@ -43,6 +43,19 @@ def _strategy_price_required_now(strategy, now=None):
     return start_time < current_time < exit_time
 
 
+def _lifecycle_details(strategy, *, broker=None):
+    return {
+        "strategy": strategy.get("strategy"),
+        "symbol": strategy.get("symbol"),
+        "timeframe": strategy.get("timeframe"),
+        "live": strategy.get("live"),
+        "position": strategy.get("position"),
+        "status": strategy.get("status"),
+        "broker": broker,
+        "lifecycle_revision": int(strategy.get("lifecycle_revision") or 0),
+    }
+
+
 def api_strategys(_admin=Depends(require_admin)):
     data = [
         clean_document(doc)
@@ -161,12 +174,29 @@ def make_edit_strategy_endpoint(kind, message, *, admin=False):
         existing = collection("strategies").find_one(query)
         if not existing:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+        username = existing.get("user") or current_username(user)
+        trading_event(
+            "strategy_modify_request",
+            force=True,
+            user=username,
+            strategy_id=botcode,
+            status=existing.get("status"),
+            position=existing.get("position"),
+            lifecycle_revision=int(existing.get("lifecycle_revision") or 0),
+        )
         doc = build_strategy(kind, payload, user, existing=existing, admin=admin)
-        update = {"$set": doc}
+        doc["status"] = existing.get("status", doc.get("status", "paused"))
+        doc["position"] = existing.get("position", doc.get("position", "out"))
+        doc["modified_at"] = datetime.datetime.now(datetime.UTC)
+        update = {
+            "$set": doc,
+            "$inc": {"lifecycle_revision": 1},
+        }
         if kind == "fractalnubiatimehedgeorder" and (
             existing.get("legs") != doc.get("legs") or existing.get("method") != doc.get("method")
         ):
             update = fractal_reset_update(botcode, None if admin else current_username(user), doc)
+            update.setdefault("$inc", {})["lifecycle_revision"] = 1
         result = collection("strategies").update_one(query, update)
         if result.matched_count == 0:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
@@ -178,7 +208,20 @@ def make_edit_strategy_endpoint(kind, message, *, admin=False):
             actor=current_username(user),
             details={"kind": kind, "admin": admin},
         )
-        return response(message, {"botcode": botcode})
+        updated = collection("strategies").find_one(query) or {}
+        trading_event(
+            "strategy_worker_instance_replaced",
+            force=True,
+            user=username,
+            strategy_id=botcode,
+            previous_revision=int(existing.get("lifecycle_revision") or 0),
+            **_lifecycle_details(updated),
+        )
+        return response(message, {
+            "botcode": botcode,
+            "status": updated.get("status"),
+            "lifecycle_revision": int(updated.get("lifecycle_revision") or 0),
+        })
 
     endpoint.__name__ = f"{'admin_' if admin else ''}edit_{kind}_strategy"
     return endpoint
@@ -187,16 +230,52 @@ def make_edit_strategy_endpoint(kind, message, *, admin=False):
 async def api_stop_ssalgo(request: Request, user=Depends(get_current_user)):
     payload = await payload_from_request(request)
     botcode = form_value(payload, "id") or form_value(payload, "botcode")
-    result = collection("strategies").update_one(
-        {"botcode": botcode, "user": current_username(user)},
-        {"$set": {"status": "paused"}},
-    )
-    mark_strategy_positions_exit(botcode, current_username(user))
-    if result.matched_count == 0:
+    username = current_username(user)
+    existing = collection("strategies").find_one({
+        "botcode": botcode,
+        "user": username,
+    })
+    if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
-    audit_event("strategy_paused", user=current_username(user), resource_type="strategy", resource_id=botcode)
-    trading_event("strategy_stopped", user=current_username(user), strategy_id=botcode, force=True)
-    return response("Successfully Stop SSALGO Strategy")
+    trading_event(
+        "strategy_stop_request",
+        force=True,
+        user=username,
+        strategy_id=botcode,
+        **_lifecycle_details(existing),
+    )
+    result = collection("strategies").update_one(
+        {
+            "botcode": botcode,
+            "user": username,
+            "status": {"$ne": "paused"},
+        },
+        {
+            "$set": {
+                "status": "paused",
+                "stopped_at": datetime.datetime.now(datetime.UTC),
+            },
+            "$inc": {"lifecycle_revision": 1},
+        },
+    )
+    mark_strategy_positions_exit(botcode, username)
+    updated = collection("strategies").find_one({
+        "botcode": botcode,
+        "user": username,
+    }) or existing
+    audit_event("strategy_paused", user=username, resource_type="strategy", resource_id=botcode)
+    trading_event(
+        "strategy_worker_instance_stopped",
+        user=username,
+        strategy_id=botcode,
+        force=True,
+        already_stopped=result.matched_count == 0,
+        **_lifecycle_details(updated),
+    )
+    return response("Successfully Stop SSALGO Strategy", {
+        "already_stopped": result.matched_count == 0,
+        "lifecycle_revision": int(updated.get("lifecycle_revision") or 0),
+    })
 
 
 async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
@@ -204,6 +283,12 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
     botcode = form_value(payload, "id") or form_value(payload, "botcode")
     db = get_database()
     username = current_username(user)
+    trading_event(
+        "strategy_start_request",
+        user=username,
+        strategy_id=botcode,
+        force=True,
+    )
     runtime = WorkerControlService(db).get_status()
     runtime_ready = runtime.get("healthy") is True and runtime.get("strategy_engine") == "running"
     if not runtime_ready:
@@ -227,6 +312,67 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Strategy not found",
         )
+    if strategy.get("status") == "opened":
+        if "lifecycle_revision" not in strategy:
+            db["strategies"].update_one(
+                {"_id": strategy["_id"], "lifecycle_revision": {"$exists": False}},
+                {
+                    "$set": {
+                        "lifecycle_revision": 1,
+                        "started_at": datetime.datetime.now(datetime.UTC),
+                    }
+                },
+            )
+            strategy = db["strategies"].find_one({
+                "botcode": botcode,
+                "user": username,
+            }) or strategy
+        broker_row = db["broker"].find_one({"user": username}) or {}
+        trading_event(
+            "strategy_start_idempotent",
+            force=True,
+            user=username,
+            strategy_id=botcode,
+            already_active=True,
+            **_lifecycle_details(
+                strategy,
+                broker=broker_row.get("selectedbroker") or "paper",
+            ),
+        )
+        return response(
+            "Strategy is already running",
+            {
+                "runtime": runtime,
+                "runtime_ready": runtime_ready,
+                "already_active": True,
+                "lifecycle_revision": int(strategy.get("lifecycle_revision") or 0),
+            },
+        )
+
+    if strategy.get("strategy") == "FRACTALNUBIATIMEHEDGEORDER":
+        unresolved = db["Opositions"].find_one({
+            "botcode": botcode,
+            "user": username,
+            "status": {"$in": ["open", "exit_pending", "exit_failed"]},
+        })
+        if unresolved:
+            unresolved_status = str(unresolved.get("status") or "open")
+            trading_event(
+                "strategy_start_rejected",
+                user=username,
+                strategy_id=botcode,
+                force=True,
+                reason="unresolved_fractal_hedge_position",
+                position_id=str(unresolved.get("_id") or ""),
+                position_status=unresolved_status,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "Cannot start while a previous multi-leg position is unresolved",
+                    "position_status": unresolved_status,
+                },
+            )
 
     if bool(strategy.get("live")):
         broker_health_service = BrokerHealthService(db)
@@ -326,6 +472,10 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
         username,
         {"status": "opened"},
     )
+    start_update.setdefault("$set", {}).update({
+        "started_at": datetime.datetime.now(datetime.UTC),
+    })
+    start_update.setdefault("$inc", {})["lifecycle_revision"] = 1
     failed_entry_state = strategy.get("entry_order_state") in {
         "broker_failed",
         "preflight_failed",
@@ -341,18 +491,36 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
             "state_repair_time": "",
         })
     result = collection("strategies").update_one(
-        {"botcode": botcode, "user": username},
+        {
+            "botcode": botcode,
+            "user": username,
+            "status": {"$ne": "opened"},
+        },
         start_update,
     )
     if result.matched_count == 0:
+        current = collection("strategies").find_one({
+            "botcode": botcode,
+            "user": username,
+        })
+        if current and current.get("status") == "opened":
+            return response(
+                "Strategy is already running",
+                {
+                    "runtime": runtime,
+                    "runtime_ready": runtime_ready,
+                    "already_active": True,
+                    "lifecycle_revision": int(current.get("lifecycle_revision") or 0),
+                },
+            )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
     strategy = collection("strategies").find_one({"botcode": botcode, "user": username}) or {}
+    broker_row = db["broker"].find_one({"user": username}) or {}
     details = {
-        "strategy": strategy.get("strategy"),
-        "symbol": strategy.get("symbol"),
-        "timeframe": strategy.get("timeframe"),
-        "live": strategy.get("live"),
-        "position": strategy.get("position"),
+        **_lifecycle_details(
+            strategy,
+            broker=broker_row.get("selectedbroker") or "paper",
+        ),
         "runtime": runtime,
         "runtime_ready": runtime_ready,
     }
@@ -364,7 +532,7 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
         details=details,
     )
     trading_event(
-        "strategy_started",
+        "strategy_worker_instance_created",
         user=current_username(user),
         strategy_id=botcode,
         force=True,
@@ -372,14 +540,42 @@ async def api_start_ssalgo(request: Request, user=Depends(get_current_user)):
     )
     return response(
         "Successfully started SSALGO strategy",
-        {"runtime": runtime, "runtime_ready": runtime_ready},
+        {
+            "runtime": runtime,
+            "runtime_ready": runtime_ready,
+            "already_active": False,
+            "lifecycle_revision": int(strategy.get("lifecycle_revision") or 0),
+        },
     )
 
 
 async def api_stop_admin_ssalgo(request: Request, _admin=Depends(require_admin)):
     payload = await payload_from_request(request)
     botcode = form_value(payload, "id") or form_value(payload, "botcode")
-    result = collection("strategies").update_one({"botcode": botcode}, {"$set": {"status": "paused"}})
+    existing = collection("strategies").find_one({"botcode": botcode})
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    trading_event(
+        "strategy_stop_request",
+        force=True,
+        user=existing.get("user"),
+        strategy_id=botcode,
+        admin=True,
+        **_lifecycle_details(existing),
+    )
+    if existing.get("status") == "paused":
+        mark_strategy_positions_exit(botcode)
+        return response("Strategy is already stopped", {"already_stopped": True})
+    result = collection("strategies").update_one(
+        {"botcode": botcode, "status": {"$ne": "paused"}},
+        {
+            "$set": {
+                "status": "paused",
+                "stopped_at": datetime.datetime.now(datetime.UTC),
+            },
+            "$inc": {"lifecycle_revision": 1},
+        },
+    )
     mark_strategy_positions_exit(botcode)
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
@@ -390,9 +586,26 @@ async def api_stop_admin_ssalgo(request: Request, _admin=Depends(require_admin))
 async def api_start_admin_ssalgo(request: Request, _admin=Depends(require_admin)):
     payload = await payload_from_request(request)
     botcode = form_value(payload, "id") or form_value(payload, "botcode")
+    existing = collection("strategies").find_one({"botcode": botcode})
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    trading_event(
+        "strategy_start_request",
+        force=True,
+        user=existing.get("user"),
+        strategy_id=botcode,
+        admin=True,
+    )
+    if existing.get("status") == "opened":
+        return response("Strategy is already running", {"already_active": True})
+    update = fractal_reset_update(botcode, None, {
+        "status": "opened",
+        "started_at": datetime.datetime.now(datetime.UTC),
+    })
+    update.setdefault("$inc", {})["lifecycle_revision"] = 1
     result = collection("strategies").update_one(
-        {"botcode": botcode},
-        fractal_reset_update(botcode, None, {"status": "opened"}),
+        {"botcode": botcode, "status": {"$ne": "opened"}},
+        update,
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
@@ -403,7 +616,30 @@ async def api_start_admin_ssalgo(request: Request, _admin=Depends(require_admin)
 async def api_delete_admin_ssalgo(request: Request, _admin=Depends(require_admin)):
     payload = await payload_from_request(request)
     botcode = form_value(payload, "id") or form_value(payload, "botcode")
-    result = collection("strategies").update_one({"botcode": botcode}, {"$set": {"status": "closed"}})
+    existing = collection("strategies").find_one({"botcode": botcode})
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found.")
+    trading_event(
+        "strategy_delete_request",
+        force=True,
+        user=existing.get("user"),
+        strategy_id=botcode,
+        admin=True,
+        **_lifecycle_details(existing),
+    )
+    if existing.get("status") == "closed":
+        mark_strategy_positions_exit(botcode)
+        return response("Strategy is already closed", {"already_deleted": True})
+    result = collection("strategies").update_one(
+        {"botcode": botcode, "status": {"$ne": "closed"}},
+        {
+            "$set": {
+                "status": "closed",
+                "deleted_at": datetime.datetime.now(datetime.UTC),
+            },
+            "$inc": {"lifecycle_revision": 1},
+        },
+    )
     mark_strategy_positions_exit(botcode)
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found.")
@@ -414,15 +650,53 @@ async def api_delete_admin_ssalgo(request: Request, _admin=Depends(require_admin
 async def api_delete_strategy(request: Request, user=Depends(get_current_user)):
     payload = await payload_from_request(request)
     botcode = form_value(payload, "id") or form_value(payload, "botcode")
-    result = collection("strategies").update_one(
-        {"botcode": botcode, "user": current_username(user)},
-        {"$set": {"status": "closed"}},
-    )
-    mark_strategy_positions_exit(botcode, current_username(user))
-    if result.matched_count == 0:
+    username = current_username(user)
+    existing = collection("strategies").find_one({
+        "botcode": botcode,
+        "user": username,
+    })
+    if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found or you do not have permission to close it.")
-    audit_event("strategy_closed", user=current_username(user), resource_type="strategy", resource_id=botcode)
-    return response("Successfully closed the strategy.")
+    trading_event(
+        "strategy_delete_request",
+        force=True,
+        user=username,
+        strategy_id=botcode,
+        **_lifecycle_details(existing),
+    )
+    result = collection("strategies").update_one(
+        {
+            "botcode": botcode,
+            "user": username,
+            "status": {"$ne": "closed"},
+        },
+        {
+            "$set": {
+                "status": "closed",
+                "deleted_at": datetime.datetime.now(datetime.UTC),
+            },
+            "$inc": {"lifecycle_revision": 1},
+        },
+    )
+    mark_strategy_positions_exit(botcode, username)
+    updated = collection("strategies").find_one({
+        "botcode": botcode,
+        "user": username,
+    }) or existing
+    audit_event("strategy_closed", user=username, resource_type="strategy", resource_id=botcode)
+    trading_event(
+        "strategy_worker_instance_stopped",
+        force=True,
+        user=username,
+        strategy_id=botcode,
+        reason="delete",
+        already_deleted=result.matched_count == 0,
+        **_lifecycle_details(updated),
+    )
+    return response("Successfully closed the strategy.", {
+        "already_deleted": result.matched_count == 0,
+        "lifecycle_revision": int(updated.get("lifecycle_revision") or 0),
+    })
 
 
 router = APIRouter(tags=["legacy strategies"])

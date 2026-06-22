@@ -340,11 +340,16 @@ def fractal_reset_update(botcode, username=None, set_fields=None):
     strategy = collection("strategies").find_one(query)
     update = {"$set": dict(set_fields or {})}
     if strategy and strategy.get("strategy") == "FRACTALNUBIATIMEHEDGEORDER":
-        open_query = {"botcode": botcode, "status": "open"}
+        open_query = {
+            "botcode": botcode,
+            "status": {"$in": ["open", "exit_pending", "exit_failed"]},
+        }
         if username:
             open_query["user"] = username
         has_open_position = collection("Opositions").count_documents(open_query, limit=1) > 0
-        if not has_open_position:
+        if has_open_position:
+            update["$set"]["position"] = "in"
+        else:
             active_entry_state = strategy.get("entry_order_state") in {"submitting", "submitted"}
             if not active_entry_state:
                 update["$unset"] = {
@@ -361,7 +366,10 @@ def fractal_reset_update(botcode, username=None, set_fields=None):
 
 
 def mark_strategy_positions_exit(botcode, username=None):
-    query = {"botcode": botcode, "status": "open"}
+    query = {
+        "botcode": botcode,
+        "status": {"$in": ["open", "exit_pending", "exit_failed"]},
+    }
     if username:
         query["user"] = username
     collection("Opositions").update_many(query, {"$set": {"decision": "exitit"}})

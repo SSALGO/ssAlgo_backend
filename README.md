@@ -147,6 +147,24 @@ Dhan uses per-user credentials entered from Broker Setup:
 - Dhan Client ID
 - DhanHQ access token
 
+Configure the public Dhan postback URL while generating the Dhan access token:
+
+```text
+https://YOUR_DOMAIN/api/brokers/dhan/postback
+```
+
+For additional protection, configure `SSLAGO_DHAN_POSTBACK_SECRET` on the
+backend and register the URL with the same secret as a query parameter:
+
+```text
+https://YOUR_DOMAIN/api/brokers/dhan/postback?token=YOUR_SECRET
+```
+
+Dhan sends raw JSON order updates to this endpoint. The backend validates the
+payload's `dhanClientId` against the encrypted per-user credentials, records
+the callback, and updates matching normalized and legacy order records. Dhan
+does not send postbacks to localhost or `127.0.0.1`.
+
 The backend verifies the token through DhanHQ API v2 before saving it. Both
 values are encrypted at rest, and invalid credentials do not replace an
 existing working connection. Dhan order placement, modification, and

@@ -59,6 +59,7 @@ class AppConfig:
     KITE_API_SECRET = os.getenv('SSLAGO_KITE_API_SECRET') or os.getenv('KITE_API_SECRET', '')
     KITE_REDIRECT_URL = os.getenv('SSLAGO_KITE_REDIRECT_URL') or os.getenv('KITE_REDIRECT_URL', '')
     KITE_POSTBACK_URL = os.getenv('SSLAGO_KITE_POSTBACK_URL') or os.getenv('KITE_POSTBACK_URL', '')
+    DHAN_POSTBACK_SECRET = os.getenv('SSLAGO_DHAN_POSTBACK_SECRET', '').strip()
     MARKET_FEED_PROVIDER = os.getenv('SSLAGO_MARKET_FEED_PROVIDER', 'zerodha').strip().lower()
     MARKET_FEED_PROVIDERS = _csv_env(
         'SSLAGO_MARKET_FEED_PROVIDERS',

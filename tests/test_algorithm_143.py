@@ -1,6 +1,8 @@
 """End-to-end tests for Algorithm 143 (EMA, SSTRIKE, EMA futures variants)."""
 
+import asyncio
 import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -10,6 +12,7 @@ from fastapi import HTTPException
 from app.api.legacy_compat.common import build_strategy, strategy_forms
 from app.domain.brokers.adapters import BrokerOrder
 from app.domain.risk.service import RiskControlService
+from app.workers.trading_worker import TradingWorker
 from connectors.connector import Exchange
 from models import EMA_fut_mode, EMA_mode, SSTRIKE_mode
 
@@ -273,6 +276,50 @@ class TestAlgorithm143SignalGeneration:
 
 
 class TestAlgorithm143OrderExecution:
+    def test_same_entry_signal_received_twice_creates_one_position(self, fake_db):
+        exchange = _exchange_stub(fake_db)
+        exchange.broker_collection = fake_db["broker"]
+        exchange.websocketretry = 0
+        exchange.prices = {
+            "NIFTY": 22000.0,
+            "NIFTY24JUN22000CE": 100.0,
+        }
+        exchange.subscribe_list = []
+        exchange.api = None
+        exchange.add_symbol_to_websocket = MagicMock()
+        exchange.add_to_websocket = MagicMock()
+        exchange._make_instrument = MagicMock(return_value=MagicMock())
+        exchange._wait_for_market_price = MagicMock(return_value=100.0)
+        exchange._get_market_price = MagicMock(return_value=100.0)
+        exchange._get_underlying_price = MagicMock(return_value=22000.0)
+        exchange.MainOptionSelect = MagicMock(
+            return_value=("NIFTY24JUN22000CE", 50, "2099-06-27", 12345)
+        )
+
+        trade = _ema_trade(
+            botname="algo143-test",
+            live=False,
+            Expiry="Current Week",
+            strike=0,
+            lot=1,
+            RolloverTime="13:01",
+            DaysHead=0,
+        )
+        fake_db["strategies"].insert_one(dict(trade))
+
+        exchange.OBUY(trade, "CE", 1)
+        exchange.OBUY(trade, "CE", 1)
+
+        positions = list(fake_db["Opositions"].find({
+            "user": "alice",
+            "botcode": trade["botcode"],
+            "status": "open",
+        }))
+        assert len(positions) == 1
+        assert positions[0]["buy_quantity"] == 50
+        assert positions[0]["sell_quantity"] == 0
+        assert positions[0]["net_quantity"] == 50
+
     def test_obuy_blocks_repeat_live_entry_after_broker_failure(self, fake_db):
         exchange = _exchange_stub(fake_db)
         exchange.broker_collection = fake_db["broker"]
@@ -376,7 +423,308 @@ class TestAlgorithm143RiskManagement:
         assert RiskControlService(fake_db)._realized_pnl_today("alice") == 0.0
 
 
+class TestTargetStopLossCoverage:
+    COMMON_OPTION_ALGOS = (
+        "SSALGO",
+        "EMA",
+        "PEMA",
+        "RF",
+        "SSAUTO",
+        "SSTRIKE",
+        "SSEQUITY",
+        "SSEQUITYFNO",
+        "EQSSALGO",
+        "SSALGO_FUT",
+        "EMA_FUT",
+        "PEMA_FUT",
+        "SSAUTO_FUT",
+        "SSEQUITY_FUT",
+    )
+
+    @pytest.mark.parametrize("strategy_name", COMMON_OPTION_ALGOS)
+    @pytest.mark.parametrize(
+        ("is_sell", "percentage", "expected_target", "expected_stop"),
+        [
+            (False, False, 110.0, 95.0),
+            (True, False, 90.0, 105.0),
+            (False, True, 110.0, 95.0),
+            (True, True, 90.0, 105.0),
+        ],
+    )
+    def test_common_algo_price_exit_levels_are_directionally_correct(
+        self, strategy_name, is_sell, percentage, expected_target, expected_stop
+    ):
+        target, stop = Exchange._price_exit_levels(
+            100,
+            10,
+            5,
+            is_sell=is_sell,
+            percentage=percentage,
+        )
+        assert (target, stop) == (expected_target, expected_stop), strategy_name
+
+    @pytest.mark.parametrize(
+        ("is_sell", "price", "expected"),
+        [
+            (False, 110, "TP Hit"),
+            (False, 95, "SL Hit"),
+            (True, 90, "TP Hit"),
+            (True, 105, "SL Hit"),
+            (False, 100, None),
+            (True, 100, None),
+        ],
+    )
+    def test_price_exit_reason_includes_exact_target_and_stop_boundaries(
+        self, is_sell, price, expected
+    ):
+        target, stop = Exchange._price_exit_levels(
+            100,
+            10,
+            5,
+            is_sell=is_sell,
+            percentage=False,
+        )
+        assert Exchange._price_exit_reason(
+            price,
+            target,
+            stop,
+            is_sell=is_sell,
+        ) == expected
+
+    @pytest.mark.parametrize(
+        ("direction", "price", "expected"),
+        [
+            ("Up Side", 110, {"tp1": True, "tp2": False, "sl": False}),
+            ("Up Side", 95, {"tp1": False, "tp2": False, "sl": True}),
+            ("Dn Side", 90, {"tp1": True, "tp2": False, "sl": False}),
+            ("Dn Side", 105, {"tp1": False, "tp2": False, "sl": True}),
+        ],
+    )
+    def test_fractal_spot_and_future_target_stop_direction(
+        self, direction, price, expected
+    ):
+        assert Exchange._directional_target_stop_flags(
+            100,
+            price,
+            10,
+            20,
+            5,
+            direction=direction,
+        ) == expected
+
+    @pytest.mark.parametrize(
+        ("price", "expected_reason"),
+        [(90.0, "TP Hit"), (105.0, "SL Hit")],
+    )
+    def test_option_seller_point_target_and_stop_close_position(
+        self, fake_db, price, expected_reason
+    ):
+        exchange = _exchange_stub(fake_db)
+        exchange.websocketretry = 0
+        exchange.api = None
+        exchange.add_symbol_to_websocket = MagicMock(return_value=True)
+        exchange._get_market_price = MagicMock(return_value=price)
+        exchange._get_underlying_price = MagicMock(return_value=22000.0)
+
+        config = build_strategy(
+            "ema",
+            _base_algo143_payload(
+                BSmode="false",
+                pct_point="false",
+                pnlexit_tpslexit="false",
+                tp="10",
+                sl="5",
+                StartTime="00:00",
+                ExitTime="23:59",
+            ),
+            _user(),
+        )
+        config.update({"status": "opened", "position": "in", "live": False})
+        fake_db["strategies"].insert_one(config)
+        saved_config = fake_db["strategies"].find_one({
+            "botcode": config["botcode"]
+        })
+        fake_db["Opositions"].insert_one({
+            "entry_id": 11,
+            "botcode": config["botcode"],
+            "user": "alice",
+            "status": "open",
+            "decision": "intrade",
+            "optionname": "NIFTY24JUN22000CE",
+            "optionentry": 100.0,
+            "optionexit": 100.0,
+            "optionlot": 50,
+            "lot": 1,
+            "initial_lot": 1,
+            "entry_quantity": 50,
+            "buy_quantity": 0,
+            "sell_quantity": 50,
+            "net_quantity": -50,
+            "live": False,
+            "symbol": "NIFTY",
+            "optionexpiry": "2099-06-27",
+            "exitcond": 99,
+            "trail_stoploss": 0,
+        })
+
+        assert exchange.OSELLEXIT(
+            saved_config,
+            Signal=0,
+            exSignal=0,
+        ) is True
+        position = fake_db["Opositions"].find_one({"entry_id": 11})
+        assert position["status"] == "close"
+        assert position["net_quantity"] == 0
+        assert Exchange._price_exit_reason(
+            price,
+            90,
+            105,
+            is_sell=True,
+        ) == expected_reason
+
+    @pytest.mark.parametrize(
+        ("side", "price", "expected_reason"),
+        [
+            ("BUY", 110.0, "MCX TP"),
+            ("BUY", 95.0, "MCX SL"),
+            ("SELL", 90.0, "MCX TP"),
+            ("SELL", 105.0, "MCX SL"),
+        ],
+    )
+    def test_mcx_target_and_stop_for_both_sides(
+        self, fake_db, side, price, expected_reason
+    ):
+        exchange = _exchange_stub(fake_db)
+        exchange._get_market_price = MagicMock(return_value=price)
+        config = {
+            "botcode": "mcx-test",
+            "user": "alice",
+            "ExitTime": "23:59",
+            "live": False,
+        }
+        fake_db["Opositions"].insert_one({
+            "botcode": "mcx-test",
+            "user": "alice",
+            "status": "open",
+            "side": side,
+            "entry_price": 100.0,
+            "optionlot": 1,
+            "lot": 1,
+            "sl_price": 95.0 if side == "BUY" else 105.0,
+            "tp_price": 110.0 if side == "BUY" else 90.0,
+            "decision": "intrade",
+        })
+
+        exchange._manage_mcx_exit(
+            config,
+            "CRUDEOIL-I",
+            1,
+            123,
+        )
+
+        position = fake_db["Opositions"].find_one({"botcode": "mcx-test"})
+        assert position["status"] == "close"
+        assert position["exit_reason"] == expected_reason
+
+
 class TestAlgorithm143PositionManagement:
+    def test_exit_uses_only_recorded_open_quantity(self, fake_db):
+        exchange = _exchange_stub(fake_db)
+        exchange.broker_collection = fake_db["broker"]
+        exchange.add_symbol_to_websocket = MagicMock(return_value=True)
+        exchange._get_market_price = MagicMock(return_value=110.0)
+        exchange._get_underlying_price = MagicMock(return_value=22000.0)
+        exchange.mainbuyexit = MagicMock(return_value={
+            "success": True,
+            "requested_quantity": 25,
+            "filled_quantity": 25,
+            "response": {"status": "success", "filled_quantity": 25},
+        })
+
+        strategy = build_strategy("ema", _base_algo143_payload(), _user())
+        strategy.update({"status": "opened", "position": "in", "live": True})
+        fake_db["strategies"].insert_one(strategy)
+        config = fake_db["strategies"].find_one({"botcode": strategy["botcode"]})
+        fake_db["Opositions"].insert_one({
+            "entry_id": 1,
+            "botcode": config["botcode"],
+            "user": config["user"],
+            "status": "open",
+            "decision": "exitit",
+            "optionname": "NIFTY24JUN22000CE",
+            "optionentry": 100.0,
+            "optionexit": 100.0,
+            "optionlot": 50,
+            "lot": 2,
+            "initial_lot": 2,
+            "entry_quantity": 25,
+            "buy_quantity": 25,
+            "sell_quantity": 0,
+            "net_quantity": 25,
+            "live": True,
+            "symbol": "NIFTY",
+            "optionexpiry": "2099-06-27",
+            "exitcond": 99,
+            "trail_stoploss": 0,
+        })
+
+        assert exchange.OBUYEXIT(config, Signal=0, exSignal=0) is True
+        position = fake_db["Opositions"].find_one({"entry_id": 1})
+        assert position["buy_quantity"] == 25
+        assert position["sell_quantity"] == 25
+        assert position["net_quantity"] == 0
+        assert position["status"] == "close"
+
+    @pytest.mark.parametrize(
+        ("result", "expected_sell", "expected_net", "expected_state"),
+        [
+            (
+                {
+                    "success": True,
+                    "requested_quantity": 50,
+                    "filled_quantity": 20,
+                    "response": {"status": "partial", "filled_quantity": 20},
+                },
+                20,
+                30,
+                "partial",
+            ),
+            (
+                {
+                    "success": False,
+                    "requested_quantity": 50,
+                    "filled_quantity": 0,
+                    "response": {"status": "rejected"},
+                },
+                0,
+                50,
+                "failed",
+            ),
+        ],
+    )
+    def test_partial_or_failed_exit_preserves_open_position_state(
+        self, fake_db, result, expected_sell, expected_net, expected_state
+    ):
+        exchange = _exchange_stub(fake_db)
+        position = {
+            "BSmode": True,
+            "optionlot": 50,
+            "lot": 1,
+            "initial_lot": 1,
+            "entry_quantity": 50,
+            "buy_quantity": 50,
+            "sell_quantity": 0,
+            "net_quantity": 50,
+        }
+
+        fully_closed = exchange._apply_exit_fill(position, "SELL", result)
+
+        assert fully_closed is False
+        assert position["buy_quantity"] == 50
+        assert position["sell_quantity"] == expected_sell
+        assert position["net_quantity"] == expected_net
+        assert position["exit_order_state"] == expected_state
+
     def test_obuyexit_resets_strategy_position_when_no_open_positions(self, fake_db):
         exchange = _exchange_stub(fake_db)
         config = build_strategy("ema", _base_algo143_payload(), _user())
@@ -419,6 +767,204 @@ class TestAlgorithm143PositionManagement:
         assert position["decision"] == "exitit"
         strategy = fake_db["strategies"].find_one({"botcode": "bot-stop-test"})
         assert strategy["status"] == "paused"
+
+
+class TestStrategyLifecycle:
+    @staticmethod
+    def _patch_runtime(monkeypatch, strategies, fake_db):
+        monkeypatch.setattr(strategies, "get_database", lambda: fake_db)
+        monkeypatch.setattr(
+            strategies,
+            "WorkerControlService",
+            lambda _db: SimpleNamespace(
+                get_status=lambda: {
+                    "healthy": True,
+                    "strategy_engine": "running",
+                }
+            ),
+        )
+        monkeypatch.setattr(strategies, "audit_event", lambda *args, **kwargs: None)
+        monkeypatch.setattr(strategies, "trading_event", lambda *args, **kwargs: None)
+
+    def test_starting_same_strategy_twice_is_idempotent(self, fake_db, monkeypatch):
+        from app.api.legacy_compat import common, strategies
+
+        strategy = build_strategy("ema", _base_algo143_payload(), _user())
+        fake_db["strategies"].insert_one(strategy)
+        monkeypatch.setattr(common, "get_database", lambda: fake_db)
+        self._patch_runtime(monkeypatch, strategies, fake_db)
+        monkeypatch.setattr(
+            strategies,
+            "payload_from_request",
+            lambda _request: None,
+        )
+
+        async def payload(_request):
+            return {"id": strategy["botcode"]}
+
+        monkeypatch.setattr(strategies, "payload_from_request", payload)
+        first = asyncio.run(
+            strategies.api_start_ssalgo(object(), user={"username": "alice"})
+        )
+        second = asyncio.run(
+            strategies.api_start_ssalgo(object(), user={"username": "alice"})
+        )
+        saved = fake_db["strategies"].find_one({"botcode": strategy["botcode"]})
+
+        assert first.data["already_active"] is False
+        assert second.data["already_active"] is True
+        assert saved["status"] == "opened"
+        assert saved["lifecycle_revision"] == 1
+
+    def test_modifying_running_strategy_replaces_revision_and_preserves_state(
+        self, fake_db, monkeypatch
+    ):
+        from app.api.legacy_compat import common, strategies
+
+        strategy = build_strategy(
+            "ema",
+            _base_algo143_payload(status="opened", position="out"),
+            _user(),
+        )
+        strategy["lifecycle_revision"] = 2
+        fake_db["strategies"].insert_one(strategy)
+        monkeypatch.setattr(common, "get_database", lambda: fake_db)
+        monkeypatch.setattr(strategies, "audit_event", lambda *args, **kwargs: None)
+        monkeypatch.setattr(strategies, "trading_event", lambda *args, **kwargs: None)
+
+        payload = _base_algo143_payload(
+            botcode=strategy["botcode"],
+            status="paused",
+            position="out",
+            tp="250",
+        )
+
+        async def request_payload(_request):
+            return payload
+
+        monkeypatch.setattr(strategies, "payload_from_request", request_payload)
+        endpoint = strategies.make_edit_strategy_endpoint("ema", "updated")
+        response = asyncio.run(endpoint(object(), user=_user()))
+        saved = fake_db["strategies"].find_one({"botcode": strategy["botcode"]})
+
+        assert response.data["lifecycle_revision"] == 3
+        assert saved["status"] == "opened"
+        assert saved["position"] == "out"
+        assert saved["tp"] == 250
+
+    def test_stale_running_snapshot_is_not_evaluated_after_stop(self, fake_db):
+        exchange = _exchange_stub(fake_db)
+        stale = _ema_trade(status="opened", position="out")
+        stale["lifecycle_revision"] = 4
+        current = dict(stale)
+        current["status"] = "paused"
+        current["lifecycle_revision"] = 5
+        fake_db["strategies"].insert_one(current)
+        exchange.EMA = MagicMock()
+
+        exchange.process_strategy(stale)
+
+        exchange.EMA.assert_not_called()
+
+    def test_stale_running_snapshot_reloads_modified_configuration(self, fake_db):
+        exchange = _exchange_stub(fake_db)
+        stale = _ema_trade(status="opened", position="out", tp=100)
+        stale["lifecycle_revision"] = 2
+        current = dict(stale)
+        current["tp"] = 250
+        current["lifecycle_revision"] = 3
+        fake_db["strategies"].insert_one(current)
+        exchange.EMA = MagicMock()
+
+        exchange.process_strategy(stale)
+
+        exchange.EMA.assert_called_once()
+        assert exchange.EMA.call_args.args[0]["tp"] == 250
+
+    def test_duplicate_strategy_snapshots_are_deduplicated_by_user_and_botcode(
+        self, fake_db
+    ):
+        exchange = _exchange_stub(fake_db)
+        rows = [
+            _ema_trade(botcode="same"),
+            _ema_trade(botcode="same"),
+            _ema_trade(botcode="same", user="bob"),
+        ]
+
+        unique = exchange._unique_strategy_snapshots(rows)
+
+        assert len(unique) == 2
+
+    def test_delete_stops_strategy_and_marks_open_position_for_exit(
+        self, fake_db, monkeypatch
+    ):
+        from app.api.legacy_compat import common, strategies
+
+        fake_db["strategies"].insert_one({
+            "botcode": "delete-running",
+            "user": "alice",
+            "strategy": "EMA",
+            "status": "opened",
+            "position": "in",
+            "lifecycle_revision": 7,
+        })
+        fake_db["Opositions"].insert_one({
+            "botcode": "delete-running",
+            "user": "alice",
+            "status": "open",
+            "decision": "intrade",
+        })
+        monkeypatch.setattr(common, "get_database", lambda: fake_db)
+        monkeypatch.setattr(strategies, "audit_event", lambda *args, **kwargs: None)
+        monkeypatch.setattr(strategies, "trading_event", lambda *args, **kwargs: None)
+
+        async def payload(_request):
+            return {"id": "delete-running"}
+
+        monkeypatch.setattr(strategies, "payload_from_request", payload)
+        asyncio.run(
+            strategies.api_delete_strategy(
+                object(),
+                user={"username": "alice"},
+            )
+        )
+
+        saved = fake_db["strategies"].find_one({"botcode": "delete-running"})
+        position = fake_db["Opositions"].find_one({"botcode": "delete-running"})
+        assert saved["status"] == "closed"
+        assert saved["lifecycle_revision"] == 8
+        assert position["decision"] == "exitit"
+
+    def test_stopped_strategy_suppresses_queued_worker_order(self, fake_db):
+        fake_db["strategies"].insert_one({
+            "botcode": "stopped-job",
+            "user": "alice",
+            "status": "paused",
+            "lifecycle_revision": 2,
+        })
+        worker = object.__new__(TradingWorker)
+        worker.db = fake_db
+        worker.audit = None
+        worker.adapter_factory = MagicMock()
+        worker._next_strategy_job = MagicMock(side_effect=[
+            {
+                "_id": "job-1",
+                "user": "alice",
+                "strategy_id": "stopped-job",
+                "symbol": "NIFTY",
+                "side": "BUY",
+                "quantity": 50,
+                "mode": "paper",
+                "lifecycle_revision": 1,
+            },
+            None,
+        ])
+        worker._complete_strategy_job = MagicMock()
+
+        result = worker.process_strategy_jobs(limit=2)
+
+        assert "not active" in result[0]["error"]
+        worker.adapter_factory.create.assert_not_called()
 
 
 class TestAlgorithm143DatabaseIntegration:

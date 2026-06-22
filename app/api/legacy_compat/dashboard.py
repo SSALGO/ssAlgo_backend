@@ -19,6 +19,37 @@ def _latest_first(cursor):
     return cursor.sort("$natural", -1).limit(DASHBOARD_HISTORY_LIMIT)
 
 
+def _position_with_quantities(doc):
+    position = clean_document(doc)
+    if not position:
+        return position
+    entry_quantity = int(
+        position.get("entry_quantity")
+        or (
+            int(position.get("optionlot") or 0)
+            * int(position.get("initial_lot") or position.get("lot") or 0)
+        )
+    )
+    buy_quantity = int(position.get("buy_quantity") or 0)
+    sell_quantity = int(position.get("sell_quantity") or 0)
+    if not buy_quantity and not sell_quantity and entry_quantity:
+        if (
+            position.get("BSmode") is False
+            or str(position.get("side") or "").upper() == "SELL"
+        ):
+            sell_quantity = entry_quantity
+        else:
+            buy_quantity = entry_quantity
+    position.update({
+        "entry_quantity": entry_quantity,
+        "buy_quantity": buy_quantity,
+        "sell_quantity": sell_quantity,
+        "net_quantity": buy_quantity - sell_quantity,
+        "is_open": position.get("status") == "open" and buy_quantity != sell_quantity,
+    })
+    return position
+
+
 async def api_searchsymbol(request: Request, query: str = Query("", min_length=0)):
     payload = await payload_from_request(request) if request.method == "POST" else {}
     search = str(form_value(payload, "query", query)).strip().upper()
@@ -106,7 +137,7 @@ def api_index(user=Depends(get_current_user)):
 
     step_start = time.perf_counter()
     open_positions = [
-        clean_document(doc)
+        _position_with_quantities(doc)
         for doc in db["Opositions"].find({
             "user": username,
             "decision": "intrade",

@@ -34,6 +34,7 @@ def ensure_core_indexes(db=None):
         ],
         "strategies": [
             ([("user", 1), ("status", 1)], "idx_strategies_user_status"),
+            ([("user", 1), ("botcode", 1)], "idx_strategies_user_botcode"),
         ],
         "orders": [
             ([("user", 1), ("status", 1)], "idx_orders_user_status"),

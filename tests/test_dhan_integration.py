@@ -1,6 +1,8 @@
 import datetime
+import asyncio
 
 import pytest
+from fastapi import HTTPException
 
 from app.api.fastapi_schemas import BrokerCredentialsRequest
 from app.api.fastapi_services import FastAPITradingServices
@@ -314,3 +316,133 @@ def test_dhan_sensitive_fields_are_masked_in_logs_and_audits():
     assert audited["dhanClientId"] == "***"
     assert audited["accessToken"] == "***"
     assert logged["securityId"] == "12345"
+
+
+def test_dhan_postback_updates_normalized_and_legacy_orders(monkeypatch, fake_db):
+    from app.api import fastapi_routers
+
+    fake_db["apis"].insert_one({
+        "user": "alice",
+        "broker": "dhan",
+        "dhanClientId": encrypt_secret("1100000001"),
+        "accessToken": encrypt_secret("secret-token"),
+    })
+    fake_db["order_logs"].insert_one({
+        "user": "alice",
+        "broker": "dhan",
+        "orderId": "DHAN-123",
+        "status": "submitted",
+    })
+    fake_db["normalized_orders"].insert_one({
+        "user": "alice",
+        "broker": "dhan",
+        "broker_order_id": "DHAN-123",
+        "status": "submitted",
+        "events": [],
+    })
+    fake_db["strategies"].insert_one({
+        "user": "alice",
+        "botcode": "S1",
+        "strategy": "FRACTALNUBIATIMEHEDGEORDER",
+        "status": "paused",
+        "position": "in",
+    })
+    fake_db["Opositions"].insert_one({
+        "user": "alice",
+        "botcode": "S1",
+        "status": "exit_pending",
+        "pos": [
+            {
+                "optionname": "NIFTY23JUN26C24100",
+                "exit_order_id": "DHAN-123",
+                "exit_order_status": "submitted",
+            },
+            {
+                "optionname": "NIFTY23JUN26P24100",
+                "exit_order_id": "DHAN-456",
+                "exit_order_status": "complete",
+            },
+        ],
+    })
+    monkeypatch.setattr(fastapi_routers, "get_database", lambda: fake_db)
+    monkeypatch.setattr(fastapi_routers.AppConfig, "DHAN_POSTBACK_SECRET", "")
+
+    class FakeRequest:
+        query_params = {}
+
+        async def json(self):
+            return {
+                "dhanClientId": "1100000001",
+                "orderId": "DHAN-123",
+                "orderStatus": "TRADED",
+                "filled_qty": 50,
+                "averageTradedPrice": 101.25,
+            }
+
+    response = asyncio.run(fastapi_routers.dhan_postback(FakeRequest()))
+    legacy = fake_db["order_logs"].find_one({"orderId": "DHAN-123"})
+    normalized = fake_db["normalized_orders"].find_one({
+        "broker_order_id": "DHAN-123"
+    })
+
+    assert response.success is True
+    assert response.data["matched"] is True
+    assert legacy["postbackStatus"] == "TRADED"
+    assert legacy["status"] == "filled"
+    assert normalized["status"] == "filled"
+    assert normalized["events"][-1]["data"]["filled_quantity"] == 50
+    legacy_position = fake_db["Opositions"].find_one({"botcode": "S1"})
+    assert legacy_position["status"] == "close"
+    assert {
+        leg["exit_order_status"] for leg in legacy_position["pos"]
+    } == {"complete"}
+    assert fake_db["strategies"].find_one({"botcode": "S1"})["position"] == "out"
+    assert response.data["legacy_position_closed"] is True
+    assert fake_db["broker_health"].find_one({
+        "user": "alice",
+        "broker": "dhan",
+    })["last_postback_status"] == "TRADED"
+    assert fake_db["broker_postbacks"].find_one({
+        "order_id": "DHAN-123"
+    })["user"] == "alice"
+
+
+def test_dhan_postback_rejects_unknown_client(monkeypatch, fake_db):
+    from app.api import fastapi_routers
+
+    monkeypatch.setattr(fastapi_routers, "get_database", lambda: fake_db)
+    monkeypatch.setattr(fastapi_routers.AppConfig, "DHAN_POSTBACK_SECRET", "")
+
+    class FakeRequest:
+        query_params = {}
+
+        async def json(self):
+            return {
+                "dhanClientId": "unknown",
+                "orderId": "DHAN-123",
+                "orderStatus": "PENDING",
+            }
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(fastapi_routers.dhan_postback(FakeRequest()))
+
+    assert error.value.status_code == 401
+
+
+def test_dhan_postback_requires_configured_url_secret(monkeypatch, fake_db):
+    from app.api import fastapi_routers
+
+    monkeypatch.setattr(fastapi_routers, "get_database", lambda: fake_db)
+    monkeypatch.setattr(
+        fastapi_routers.AppConfig,
+        "DHAN_POSTBACK_SECRET",
+        "postback-secret",
+    )
+
+    class FakeRequest:
+        query_params = {"token": "wrong-secret"}
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(fastapi_routers.dhan_postback(FakeRequest()))
+
+    assert error.value.status_code == 401

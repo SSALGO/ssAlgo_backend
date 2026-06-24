@@ -628,6 +628,217 @@ class TestTargetStopLossCoverage:
 
 
 class TestAlgorithm143PositionManagement:
+    def _algo143_exit_exchange(self, fake_db, price):
+        exchange = _exchange_stub(fake_db)
+        exchange.broker_collection = fake_db["broker"]
+        exchange.websocketretry = 0
+        exchange.api = None
+        exchange.add_symbol_to_websocket = MagicMock(return_value=False)
+        exchange._get_market_price = MagicMock(return_value=price)
+        exchange._get_underlying_price = MagicMock(return_value=22000.0)
+        return exchange
+
+    def _insert_algo143_config(self, fake_db, **overrides):
+        payload = _base_algo143_payload(
+            FixedLot="Doubling",
+            lot="2",
+            initiallot="1",
+            status="opened",
+            position="in",
+            StartTime="00:00",
+            ExitTime="23:59",
+            **overrides,
+        )
+        config = build_strategy("ema", payload, _user())
+        config.update({"status": "opened", "position": "in"})
+        fake_db["strategies"].insert_one(config)
+        return fake_db["strategies"].find_one({"botcode": config["botcode"]})
+
+    def _insert_algo143_position(self, fake_db, config, **overrides):
+        position = {
+            "entry_id": overrides.pop("entry_id", 143),
+            "botcode": config["botcode"],
+            "user": config["user"],
+            "status": "open",
+            "decision": "intrade",
+            "optionname": overrides.pop("optionname", "NIFTY24JUN22000CE"),
+            "optionentry": 100.0,
+            "optionexit": 100.0,
+            "optionlot": 50,
+            "lot": config["lot"],
+            "initial_lot": config["lot"],
+            "entry_quantity": int(config["lot"]) * 50,
+            "buy_quantity": int(config["lot"]) * 50,
+            "sell_quantity": 0,
+            "net_quantity": int(config["lot"]) * 50,
+            "live": False,
+            "symbol": "NIFTY",
+            "optionexpiry": "2099-06-27",
+            "exitcond": -1,
+            "trail_stoploss": 0,
+            "BSmode": True,
+            "side": "CE",
+        }
+        position.update(overrides)
+        fake_db["Opositions"].insert_one(position)
+        return fake_db["Opositions"].find_one({"entry_id": position["entry_id"]})
+
+    def test_first_signal_enters_with_current_configured_lot(self, fake_db):
+        exchange = _exchange_stub(fake_db)
+        exchange.broker_collection = fake_db["broker"]
+        exchange.websocketretry = 0
+        exchange.prices = {
+            "NIFTY": 22000.0,
+            "NIFTY24JUN22000CE": 100.0,
+        }
+        exchange.subscribe_list = []
+        exchange.api = None
+        exchange.add_symbol_to_websocket = MagicMock()
+        exchange.add_to_websocket = MagicMock()
+        exchange._make_instrument = MagicMock(return_value=MagicMock())
+        exchange._wait_for_market_price = MagicMock(return_value=100.0)
+        exchange._get_market_price = MagicMock(return_value=100.0)
+        exchange._get_underlying_price = MagicMock(return_value=22000.0)
+        exchange.MainOptionSelect = MagicMock(
+            return_value=("NIFTY24JUN22000CE", 50, "2099-06-27", 12345)
+        )
+        trade = _ema_trade(
+            botname="algo143-first-entry",
+            live=False,
+            Expiry="Current Week",
+            strike=0,
+            lot=1,
+            initiallot=1,
+            RolloverTime="13:01",
+            DaysHead=0,
+        )
+        fake_db["strategies"].insert_one(dict(trade))
+
+        exchange.OBUY(trade, "CE", 1)
+
+        position = fake_db["Opositions"].find_one({"botcode": trade["botcode"]})
+        strategy = fake_db["strategies"].find_one({"botcode": trade["botcode"]})
+        assert position["lot"] == 1
+        assert position["entry_quantity"] == 50
+        assert strategy["position"] == "in"
+
+    def test_profitable_buyer_signal_exit_resets_next_entry_lot(self, fake_db):
+        exchange = self._algo143_exit_exchange(fake_db, price=110.0)
+        config = self._insert_algo143_config(fake_db)
+        self._insert_algo143_position(fake_db, config)
+
+        assert exchange.OBUYEXIT(config, Signal=-1, exSignal=-1) is True
+
+        strategy = fake_db["strategies"].find_one({"botcode": config["botcode"]})
+        position = fake_db["Opositions"].find_one({"botcode": config["botcode"]})
+        assert position["status"] == "close"
+        assert position["pnl"] > 0
+        assert strategy["position"] == "out"
+        assert strategy["lot"] == strategy["initiallot"] == 1
+
+    def test_losing_buyer_signal_exit_doubles_next_entry_lot(self, fake_db):
+        exchange = self._algo143_exit_exchange(fake_db, price=90.0)
+        config = self._insert_algo143_config(fake_db)
+        self._insert_algo143_position(fake_db, config)
+
+        assert exchange.OBUYEXIT(config, Signal=-1, exSignal=-1) is True
+
+        strategy = fake_db["strategies"].find_one({"botcode": config["botcode"]})
+        position = fake_db["Opositions"].find_one({"botcode": config["botcode"]})
+        assert position["status"] == "close"
+        assert position["pnl"] < 0
+        assert strategy["position"] == "out"
+        assert strategy["lot"] == 4
+
+    def test_losing_seller_signal_exit_uses_exsignal_and_doubles_next_lot(self, fake_db):
+        exchange = self._algo143_exit_exchange(fake_db, price=110.0)
+        config = self._insert_algo143_config(fake_db, BSmode="false")
+        self._insert_algo143_position(
+            fake_db,
+            config,
+            BSmode=False,
+            side="PE",
+            buy_quantity=0,
+            sell_quantity=100,
+            net_quantity=-100,
+        )
+
+        assert exchange.OSELLEXIT(config, Signal=0, exSignal=-1) is True
+
+        strategy = fake_db["strategies"].find_one({"botcode": config["botcode"]})
+        position = fake_db["Opositions"].find_one({"botcode": config["botcode"]})
+        assert position["status"] == "close"
+        assert position["pnl"] < 0
+        assert strategy["position"] == "out"
+        assert strategy["lot"] == 4
+
+    def test_losing_future_signal_exit_doubles_next_lot(self, fake_db):
+        exchange = _exchange_stub(fake_db)
+        exchange.add_symbol_to_websocket = MagicMock()
+        exchange.prices = {"NIFTY-FUT": 90.0}
+        config = self._insert_algo143_config(
+            fake_db,
+            Expiry="Current Month",
+            onspot="true",
+            BSmode="false",
+        )
+        self._insert_algo143_position(
+            fake_db,
+            config,
+            optionname="NIFTY-FUT",
+            side="BUY",
+            exitcond=-1,
+        )
+
+        exchange.FEXIT(config, Signal=-1)
+
+        strategy = fake_db["strategies"].find_one({"botcode": config["botcode"]})
+        position = fake_db["Opositions"].find_one({"botcode": config["botcode"]})
+        assert position["status"] == "close"
+        assert position["pnl"] < 0
+        assert strategy["position"] == "out"
+        assert strategy["lot"] == 4
+
+    def test_partial_signal_exit_preserves_position_and_does_not_double(self, fake_db):
+        exchange = self._algo143_exit_exchange(fake_db, price=90.0)
+        config = self._insert_algo143_config(fake_db, live="true")
+        config["live"] = True
+        self._insert_algo143_position(fake_db, config, live=True)
+        fake_db["strategies"].update_one(
+            {"botcode": config["botcode"]},
+            {"$set": {"live": True}},
+        )
+        exchange.mainbuyexit = MagicMock(return_value={
+            "success": True,
+            "requested_quantity": 100,
+            "filled_quantity": 50,
+            "response": {"status": "partial", "filled_quantity": 50},
+        })
+
+        assert exchange.OBUYEXIT(config, Signal=-1, exSignal=-1) is False
+
+        strategy = fake_db["strategies"].find_one({"botcode": config["botcode"]})
+        position = fake_db["Opositions"].find_one({"botcode": config["botcode"]})
+        assert position["status"] == "open"
+        assert position["exit_order_state"] == "partial"
+        assert position["net_quantity"] == 50
+        assert strategy["position"] == "in"
+        assert strategy["lot"] == 2
+
+    def test_losing_non_signal_exit_does_not_double_lot(self, fake_db):
+        exchange = self._algo143_exit_exchange(fake_db, price=90.0)
+        config = self._insert_algo143_config(fake_db)
+        self._insert_algo143_position(fake_db, config, exitcond=99)
+
+        assert exchange.OBUYEXIT(config, Signal=0, exSignal=0) is True
+
+        strategy = fake_db["strategies"].find_one({"botcode": config["botcode"]})
+        position = fake_db["Opositions"].find_one({"botcode": config["botcode"]})
+        assert position["status"] == "close"
+        assert position["exit_reason"] == "PNL SL"
+        assert position["pnl"] < 0
+        assert strategy["lot"] == 2
+
     def test_exit_uses_only_recorded_open_quantity(self, fake_db):
         exchange = _exchange_stub(fake_db)
         exchange.broker_collection = fake_db["broker"]

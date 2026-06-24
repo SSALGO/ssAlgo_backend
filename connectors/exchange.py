@@ -3228,6 +3228,25 @@ class Exchange:
             in {'submitting', 'attempted'}
         )
 
+    @staticmethod
+    def _apply_algo143_signal_exit_lot_update(config, pnl):
+        """Update the next Algo 143 lot after a fully closed signal exit."""
+        if pnl < 0:
+            if config.get('FixedLot') == 'Doubling':
+                config['lot'] = int(config.get('lot') or 0) * 2
+            elif config.get('FixedLot') == 'Steps':
+                config['lot'] = int(config.get('lot') or 0) + int(
+                    config.get('stepvalue') or 0
+                )
+        else:
+            config['lot'] = int(config.get('initiallot') or config.get('lot') or 0)
+
+    @staticmethod
+    def _apply_algo143_non_signal_exit_lot_update(config, pnl):
+        """Preserve normal/fixed lot for non-signal exits; only profits reset."""
+        if pnl >= 0:
+            config['lot'] = int(config.get('initiallot') or config.get('lot') or 0)
+
     def _release_stale_entry_submission(self, trade):
         self.strategy_collection.update_one(
             {
@@ -9903,16 +9922,16 @@ class Exchange:
                     print(f"{now} :: {trade['user']} :: ### {exit_reason} ###")
 
                     trade['status'] = 'close'
+                    trade['exit_reason'] = exit_reason
                     config['position'] = 'out'
 
                     # LOT UPDATE
-                    if pnl < 0:
-                        if config['FixedLot'] == 'Doubling':
-                            config['lot'] *= 2
-                        elif config['FixedLot'] == 'Steps':
-                            config['lot'] += config['stepvalue']
+                    if exit_reason == "Signal Exit":
+                        self._apply_algo143_signal_exit_lot_update(config, pnl)
                     else:
-                        config['lot'] = config['initiallot']
+                        self._apply_algo143_non_signal_exit_lot_update(
+                            config, pnl
+                        )
 
                     trade['exittime'] = int(now.timestamp())
 
@@ -10406,15 +10425,16 @@ class Exchange:
 
             # ---- Helper: Update lot sizing ----
             def update_lot_after_exit(trade, config):
-                if trade['pnl'] < 0:
-                    if config['FixedLot'] == 'Doubling':
-                        config['lot'] = config['lot'] * 2
-                    elif config['FixedLot'] == 'Steps':
-                        config['lot'] += config['stepvalue']
-                    elif config['FixedLot'] == 'FixedLot':
-                        config['lot'] = config['lot']
+                if trade.get('exit_reason') == "Exit HIT":
+                    self._apply_algo143_signal_exit_lot_update(
+                        config,
+                        trade['pnl'],
+                    )
                 else:
-                    config['lot'] = config['initiallot']
+                    self._apply_algo143_non_signal_exit_lot_update(
+                        config,
+                        trade['pnl'],
+                    )
 
             # ---- Helper: Execute exit ----
             def execute_exit(reason, current_trade, current_user):
@@ -10878,16 +10898,16 @@ class Exchange:
                     print(f"{now} :: {userr} :: ### {exit_reason} ###")
 
                     trade['status'] = 'close'
+                    trade['exit_reason'] = exit_reason
                     config['position'] = 'out'
 
                     # LOT UPDATE
-                    if pnl < 0:
-                        if config['FixedLot'] == 'Doubling':
-                            config['lot'] *= 2
-                        elif config['FixedLot'] == 'Steps':
-                            config['lot'] += config['stepvalue']
+                    if exit_reason == "Signal Exit":
+                        self._apply_algo143_signal_exit_lot_update(config, pnl)
                     else:
-                        config['lot'] = config['initiallot']
+                        self._apply_algo143_non_signal_exit_lot_update(
+                            config, pnl
+                        )
 
                     trade['exittime'] = int(now.timestamp())
 
